@@ -10,7 +10,8 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 
 - **Live URL:** https://shrinksight-app.web.app *(setup phase: currently shows the component self-test)*
 - **Plan:** [`docs/PLAN.md`](docs/PLAN.md) · **Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
-  **Setup & deployment:** [`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md)
+  **Setup & deployment:** [`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md) ·
+  **New teammate?** [`docs/TEAMMATE_SETUP.md`](docs/TEAMMATE_SETUP.md)
 
 ## Google AI & Cloud services
 | Service | Used for |
