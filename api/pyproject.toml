@@ -1,0 +1,30 @@
+[project]
+name = "shrinksight-api"
+version = "0.1.0"
+description = "ShrinkSight investigation API (Cloud Run)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "google-genai>=1.30",
+    "google-cloud-firestore>=2.19",
+    "google-cloud-storage>=2.18",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,119 @@
+name: ci-cd
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  REGION: us-central1
+  SERVICE: shrinksight-api
+  AR_REPO: shrinksight
+
+jobs:
+  api-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  web-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-out
+          path: web/out
+          retention-days: 3
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [api-ci, web-ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # keyless auth to Google Cloud (Workload Identity Federation)
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: web/out
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push API image
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/api:${GITHUB_SHA::12}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build --build-arg APP_VERSION="${GITHUB_SHA::7}" -t "$IMAGE" api
+          docker push "$IMAGE"
+
+      - name: Deploy API to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --service-account "${{ vars.RUNTIME_SA }}" \
+            --allow-unauthenticated \
+            --min-instances 0 --max-instances 2 --concurrency 20 \
+            --cpu 1 --memory 512Mi --timeout 60 \
+            --set-secrets GEMINI_API_KEY=gemini-api-key:latest \
+            --set-env-vars "GCP_PROJECT=$PROJECT_ID,EVIDENCE_BUCKET=${{ vars.EVIDENCE_BUCKET }},GEMINI_MODEL=${{ vars.GEMINI_MODEL }},APP_VERSION=${GITHUB_SHA::7}" \
+            --quiet
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Deploy Hosting + Firestore rules
+        run: npx --yes firebase-tools@15 deploy --only hosting,firestore:rules --project "$PROJECT_ID" --non-interactive
+
+      - name: Smoke test (through Hosting -> Cloud Run)
+        run: |
+          URL="https://$PROJECT_ID.web.app/api/healthz"
+          for i in 1 2 3 4 5; do
+            if curl -fsS "$URL" | tee /dev/stderr | grep -q "\"version\":\"${GITHUB_SHA::7}\""; then
+              echo "Smoke test passed"; exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s"; sleep 10
+          done
+          echo "Smoke test failed: $URL did not report version ${GITHUB_SHA::7}"; exit 1
