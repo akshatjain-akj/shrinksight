@@ -1,0 +1,13 @@
+https://console.cloud.google.com/
+https://console.firebase.google.com/
+const firebaseConfig = {
+  apiKey: "AIzaSyCLVrHxj6KSod48-ZxV9HIsF_-bkZMYzdc",
+  authDomain: "shrinksight-app.firebaseapp.com",
+  projectId: "shrinksight-app",
+  storageBucket: "shrinksight-app.firebasestorage.app",
+  messagingSenderId: "820416173552",
+  appId: "1:820416173552:web:c40c5e42d0afe8780af935"
+};
+https://aistudio.google.com/
+
+AQ.Ab8RN6Lk_Pj4BWk1wpgVRiy1KwYHtP1bwHxXsZkR6WG0PdEM3w
