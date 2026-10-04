@@ -62,8 +62,12 @@ Method:
   the scanner zone. Call get_pos_transaction to compare against what was actually scanned. For each item that
   wasn't scanned, call get_sku_price with a short description.
 - Shop floor: watch where picked-up items go. Call get_zone_policy for the zone involved.
+- A person lying flat on the floor is a health hazard, not a theft. Use RULE_BREACH and say they are down.
+  Bending or reaching toward a shelf is not a fall.
 - Timestamps are relative to the clip start, formatted mm:ss.s. Bounding boxes use [ymin, xmin, ymax, xmax]
   normalised to 0-1000.
+- Stills, when attached, come first and are labelled before the reach, the reach, the hold, and just after.
+  A red rectangle marks the person. Judge the stills and the video together.
 """
 
 VERDICT_INSTRUCTION = """Give your final verdict as JSON matching the schema.
@@ -154,17 +158,48 @@ def normalise_mime(mime: str) -> str | None:
     return ALLOWED_MIME.get(mime.split(";")[0].strip().lower())
 
 
-def cache_key(clip: bytes, camera: Camera, transaction: Transaction | None, model: str) -> str:
+def cache_key(
+    clip: bytes,
+    camera: Camera,
+    transaction: Transaction | None,
+    model: str,
+    stills: list[tuple[str, bytes]] | None = None,
+) -> str:
     h = hashlib.sha256(clip)
     h.update(json.dumps([camera.id, transaction.model_dump() if transaction else None, model]).encode())
+    for label, data in stills or []:
+        h.update(label.encode())
+        h.update(data)
     return "inv:" + h.hexdigest()
 
 
-def _context_text(camera: Camera, repo: Repo) -> str:
+def _context_text(camera: Camera, repo: Repo, tier1_events: list[dict] | None = None) -> str:
     zones = [z for z in repo.zones() if z.id in camera.zone_ids]
     zone_lines = "\n".join(f"- {z.id}: {z.name} ({z.kind})" for z in zones)
     lane = f"Lane id: {camera.lane_id}\n" if camera.lane_id else ""
-    return f"Camera: {camera.name} ({camera.kind})\n{lane}Zones in view:\n{zone_lines}"
+    text = f"Camera: {camera.name} ({camera.kind})\n{lane}Zones in view:\n{zone_lines}"
+    if not tier1_events:
+        return text
+    hints = "\n".join(_hint_line(e) for e in tier1_events[:12])
+    return text + "\n\nOn-device Tier-1 hints (verify on the clip; they are not proof):\n" + hints
+
+
+def _hint_line(event: dict) -> str:
+    score = float(event.get("score", 0))
+    trigger = event.get("trigger") or "unspecified"
+    confidence = event.get("confidence")
+    confidence_txt = f" confidence {float(confidence):.2f}" if confidence is not None else ""
+    camera = event.get("camera_id")
+    camera_txt = f" camera {camera}" if camera else ""
+    box = event.get("box")
+    box_txt = ""
+    if isinstance(box, list) and len(box) == 4:
+        box_txt = " box [" + ", ".join(str(int(n)) for n in box) + "]"
+    detail = event.get("detail", "")
+    return (
+        f"- {event.get('t', '?')} {event.get('kind', 'event')} trigger {trigger}"
+        f"{confidence_txt} score {score:.2f}{camera_txt}{box_txt}: {detail}"
+    )
 
 
 def _now_iso() -> str:
@@ -175,6 +210,19 @@ def _progress(step: str, label: str, **extra) -> dict:
     return {"type": "progress", "step": step, "label": label, **extra}
 
 
+def _still_parts(types, stills: list[tuple[str, bytes]]) -> list:
+    if not stills:
+        return []
+    labels = ", ".join(label.replace("_", " ") for label, _ in stills)
+    parts = [types.Part.from_text(
+        text=f"Four moments, in order ({labels}). The red rectangle marks the person. The video follows."
+    )]
+    for label, data in stills:
+        parts.append(types.Part.from_text(text=f"Still: {label.replace('_', ' ')}"))
+        parts.append(types.Part(inline_data=types.Blob(data=data, mime_type="image/jpeg")))
+    return parts
+
+
 def investigate(
     clip: bytes,
     mime: str,
@@ -183,11 +231,13 @@ def investigate(
     repo: Repo,
     gateway: Gateway,
     settings: Settings,
+    tier1_events: list[dict] | None = None,
+    stills: list[tuple[str, bytes]] | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event."""
     started = time.monotonic()
     model = settings.investigator_model
-    key = cache_key(clip, camera, transaction, model)
+    key = cache_key(clip, camera, transaction, model, stills)
 
     cached = repo.cache_get(key)
     if cached and (incident := repo.get_incident(cached["incident_id"])):
@@ -198,17 +248,19 @@ def investigate(
     try:
         from google.genai import types
 
+        context = _context_text(camera, repo, tier1_events)
+        marked = _still_parts(types, stills or [])
+        plain_video = types.Part(inline_data=types.Blob(data=clip, mime_type=mime))
         video = types.Part(
             inline_data=types.Blob(data=clip, mime_type=mime),
             video_metadata=types.VideoMetadata(fps=settings.clip_fps),
         )
-        context = _context_text(camera, repo)
         toolbox = ToolBox(repo, camera, transaction)
         tool_log: list[ToolCallLog] = []
         tool_results: list[dict] = []
 
         # ---- 1. Agent pass with tools ----
-        yield _progress("watching", "Watching the clip")
+        yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
         agent_config = types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             tools=[types.Tool(function_declarations=_tool_declarations(types, camera))],
@@ -216,11 +268,28 @@ def investigate(
             media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
             temperature=0,
         )
-        contents: list = [types.Content(role="user", parts=[video, types.Part.from_text(text=context)])]
+        contents: list = [types.Content(role="user", parts=[*marked, video, types.Part.from_text(text=context)])]
         notes = ""
+        stripped = False
         while True:
             _check_deadline(started, settings)
-            result: GenResult = gateway.generate(model, contents, agent_config)
+            try:
+                result: GenResult = gateway.generate(model, contents, agent_config)
+            except GeminiUnavailable as exc:
+                # Some models reject fps / media-resolution on a browser WebM. Retry the bytes plain.
+                if exc.code != 400 or stripped:
+                    raise
+                stripped = True
+                yield _progress("watching", "Retrying the clip without video metadata")
+                plain_parts = [*marked, plain_video, types.Part.from_text(text=context)]
+                contents = [types.Content(role="user", parts=plain_parts)]
+                agent_config = types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    tools=[types.Tool(function_declarations=_tool_declarations(types, camera))],
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    temperature=0,
+                )
+                continue
             notes = result.text or notes
             budget = settings.agent_max_tool_calls - len(tool_log)
             if not result.function_calls or budget <= 0:
@@ -246,7 +315,11 @@ def investigate(
 
         # ---- 2. Verdict pass with forced JSON ----
         yield _progress("report", "Writing the incident report")
-        verdict = _verdict_pass(types, gateway, model, video, context, tool_results, notes, started, settings)
+        # If the model rejected video metadata above, the verdict pass must send the plain clip too.
+        verdict = _verdict_pass(
+            types, gateway, model, plain_video if stripped else video, context, tool_results, notes, started,
+            settings, marked, plain=stripped,
+        )
 
         # ---- 3. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
@@ -264,19 +337,21 @@ def _check_deadline(started: float, settings: Settings) -> None:
         raise TimeoutError
 
 
-def _verdict_pass(types, gateway, model, video, context, tool_results, notes, started, settings) -> VerdictOut:
+def _verdict_pass(
+    types, gateway, model, video, context, tool_results, notes, started, settings, marked=None, plain=False
+) -> VerdictOut:
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
         response_mime_type="application/json",
         response_schema=VerdictOut,
-        media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+        media_resolution=None if plain else types.MediaResolution.MEDIA_RESOLUTION_LOW,
         temperature=0,
     )
     briefing = (
         f"{context}\n\nTool results:\n{json.dumps(tool_results, ensure_ascii=False)}\n\n"
         f"Your investigation notes:\n{notes or '(none)'}\n\n{VERDICT_INSTRUCTION}"
     )
-    contents: list = [types.Content(role="user", parts=[video, types.Part.from_text(text=briefing)])]
+    contents: list = [types.Content(role="user", parts=[*(marked or []), video, types.Part.from_text(text=briefing)])]
     last_error = ""
     for _ in range(2):  # one re-ask if the JSON doesn't validate
         _check_deadline(started, settings)

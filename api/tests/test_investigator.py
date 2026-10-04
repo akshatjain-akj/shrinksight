@@ -129,6 +129,64 @@ def test_floor_concealment_prices_the_hidden_item(repo, settings):
     assert incident["est_loss_inr"] == 2400
 
 
+def test_tier1_hints_reach_the_prompt(repo, settings):
+    gateway = FakeGateway([text("notes"), text(verdict_json())])
+
+    events = list(investigate(
+        CLIP, "video/webm", camera(repo, "cam-aisle-2"), None, repo, gateway, settings,
+        tier1_events=[{
+            "t": "00:01.2",
+            "kind": "CONCEALMENT",
+            "score": 0.7,
+            "detail": "wrist to pocket",
+            "camera_id": "cam-aisle-2",
+            "trigger": "hot_score",
+            "confidence": 0.66,
+            "box": [120, 80, 900, 420],
+        }],
+    ))
+
+    prompt = str(gateway.calls[0][1])
+    assert events[-1]["type"] == "result"
+    assert "wrist to pocket" in prompt
+    assert "trigger hot_score" in prompt
+    assert "confidence 0.66" in prompt
+    assert "camera cam-aisle-2" in prompt
+    assert "box [120, 80, 900, 420]" in prompt
+
+
+def test_marked_stills_are_sent_ahead_of_the_clip(repo, settings):
+    gateway = FakeGateway([text("notes"), text(verdict_json(verdict="CONCEALMENT"))])
+    jpeg = b"\xff\xd8\xff\xd9"
+    events = list(investigate(
+        CLIP, "video/webm", camera(repo, "cam-aisle-4"), None, repo, gateway, settings,
+        stills=[("before", jpeg), ("reach", jpeg), ("hold", jpeg), ("after", jpeg)],
+    ))
+
+    assert events[-1]["type"] == "result"
+    texts = [part.text for part in gateway.calls[0][1][0].parts if part.text]
+    images = [p for p in gateway.calls[0][1][0].parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
+    assert "Still: before" in texts
+    assert "Still: after" in texts
+    assert len(images) == 4
+    verdict_images = [
+        p for p in gateway.calls[-1][1][0].parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"
+    ]
+    assert len(verdict_images) == 4
+
+
+def test_metadata_rejection_retries_plain_clip_in_both_passes(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("bad video metadata", 400), text("notes"), text(verdict_json())])
+
+    events = run(repo, gateway, settings)
+
+    assert events[-1]["type"] == "result"
+    verdict_model, verdict_contents, verdict_config = gateway.calls[-1]
+    videos = [p for p in verdict_contents[0].parts if p.inline_data and p.inline_data.mime_type == "video/webm"]
+    assert videos and all(p.video_metadata is None for p in videos)
+    assert verdict_config.media_resolution is None
+
+
 def test_normalise_mime():
     assert normalise_mime("video/webm;codecs=vp9") == "video/webm"
     assert normalise_mime("video/quicktime") == "video/mov"

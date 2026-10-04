@@ -10,14 +10,58 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 
 - **Live URL:** https://shrinksight-app.web.app
 
-### What you can try (prototype v0.2)
+### What you can try
 | Page | What it does |
 |---|---|
-| **Monitor** (`/`) | Live incident feed (Firestore real-time), false-alarm funnel, camera tiles |
+| **Overview** (`/`) | What ShrinkSight does, how the two tiers work, architecture |
+| **Monitor** (`/monitor`) | Camera wall with live alert rail (Firestore real-time), false-alarm funnel |
+| **Playback** (`/playback`) | Search incidents by date, camera and event; replay the incident timeline |
+| **Live edge** (`/edge`) | Tier 1 on this device: MediaPipe pose/face/objects, on-device face blur, score gate → Gemini |
 | **Incident** (`/incident?id=…`) | Gemini's verdict, agent steps, *seen on camera vs. till receipt*, estimated loss in ₹, human Confirm / Dismiss |
 | **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress |
 | **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable |
 | **Setup check** (`/setup`) | Verifies Cloud Run, Firestore, Storage, Auth and Gemini |
+## Data flow
+
+A live clip is not stored. Gemini sees a short face-blurred WebM, then only the incident and a cache pointer are kept.
+
+```mermaid
+flowchart LR
+  cam[Webcam or file] --> edge[Browser MediaPipe]
+  edge --> blur[Face blur on canvas]
+  blur --> gate{Live camera?}
+  gate -->|score gate| clip[4s WebM]
+  gate -->|file ended, consent on| clip
+  clip --> api[Cloud Run /api/investigate]
+  api --> hit{Clip hash in cache?}
+  hit -->|yes| old[Return saved incident]
+  hit -->|no| gemini[Gemini watches clip]
+  gemini --> tools[Till, zone, SKU tools]
+  tools --> gemini
+  gemini --> verdict[Structured verdict]
+  verdict --> save[Write incident and cache key]
+  save --> sse[SSE result]
+  old --> sse
+  sse --> ui[Monitor, Playback, incident page]
+  ui --> review[Confirm or dismiss]
+  review --> save
+```
+
+## Store
+
+`FirestoreRepo` on Cloud Run, `MemoryRepo` locally. Same collections. Seed version lives in `meta/seed`. `counters` are daily rate limits.
+
+```mermaid
+erDiagram
+  CAMERA ||--o{ ZONE : zone_ids
+  CAMERA ||--o{ TRANSACTION : lane_id
+  CAMERA ||--o{ INCIDENT : camera_id
+  TRANSACTION ||--o{ INCIDENT : transaction_id
+  ZONE ||--o{ RULE : spec.zone_id
+  SKU ||--o{ INCIDENT : matched into unscanned_items
+  INCIDENT ||--o| CACHE : incident_id
+```
+
 - **Plan:** [`docs/PLAN.md`](docs/PLAN.md) · **Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   **Setup & deployment:** [`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md) ·
   **New teammate?** [`docs/TEAMMATE_SETUP.md`](docs/TEAMMATE_SETUP.md)

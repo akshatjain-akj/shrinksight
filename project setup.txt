@@ -1,5 +1,15 @@
+ShrinkSight — current setup
+Theme: Retail & Commerce. Store: Demo Mart (synthetic).
+Live site: https://shrinksight-app.web.app
+Local web: http://localhost:3000
+Local API: http://localhost:8080  (REPO_BACKEND=memory)
+
+Consoles
 https://console.cloud.google.com/
 https://console.firebase.google.com/
+https://aistudio.google.com/
+
+Firebase web config (public; also in web/lib/firebase.ts)
 const firebaseConfig = {
   apiKey: "AIzaSyCLVrHxj6KSod48-ZxV9HIsF_-bkZMYzdc",
   authDomain: "shrinksight-app.firebaseapp.com",
@@ -8,6 +18,31 @@ const firebaseConfig = {
   messagingSenderId: "820416173552",
   appId: "1:820416173552:web:c40c5e42d0afe8780af935"
 };
-https://aistudio.google.com/
 
-AQ.Ab8RN6Lk_Pj4BWk1wpgVRiy1KwYHtP1bwHxXsZkR6WG0PdEM3w
+Gemini
+Model: gemini-3.5-flash-lite
+Key lives in api/.env (gitignored). Do not paste the key back into this file.
+Project: shrinksight-app
+Evidence bucket (not written yet): gs://shrinksight-app-evidence
+  seed/     demo clips that should stay
+  evidence/ live clips, 24 h delete
+
+Pages
+/            Overview. Data-flow and store diagrams on the architecture section.
+/monitor     Camera wall and alert rail. Tile pictures are placeholders. Labels and alerts are real incidents.
+/playback    Search by date, camera, event. Player is the incident timeline, not a video file.
+/edge        Live edge. Webcam or an uploaded file. File uploads skip the score gate and use Aisle 4.
+/investigate Upload or record a clip (max 15 MB). This page and the incident it opens can play that local file.
+/incident    Verdict, receipt, confirm or dismiss. Video only if this tab still holds the upload blob.
+/rules       Plain-English rule compiled by Gemini.
+/about       How the two tiers work.
+/setup       Cloud dependency check. Not in the nav.
+
+Clips
+Drop files later in web/public/clips/ (see the README there).
+Names: lane-1.mp4, lane-2.mp4, aisle-4.mp4, aisle-2.mp4.
+Git ignores mp4, webm, and mov. Monitor and Playback do not play them yet.
+
+What is stored
+Firestore (Cloud Run) or memory (local): cameras, zones, skus, transactions, incidents, rules, cache, counters, meta/seed.
+The cache stores an incident id for a clip hash. It does not store the video.

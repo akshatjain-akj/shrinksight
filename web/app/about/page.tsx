@@ -24,7 +24,8 @@ export default function AboutPage() {
         <ol className="stack" style={{ margin: 0, paddingLeft: "1.2rem" }}>
           <li>
             <strong>Tier 1, on the device:</strong> lightweight vision in the browser flags suspicious moments, like a hand
-            going around the scanner or into a pocket. <span className="muted">(MediaPipe detection is coming next.)</span>
+            going around the scanner or into a pocket. Open <Link href="/edge">Live edge</Link> to run it on
+            this device. Faces are blurred before a clip can leave the browser.
           </li>
           <li>
             <strong>Tier 2, the Gemini agent:</strong> watches the short clip, calls tools to fetch the till receipt, the zone
@@ -46,7 +47,7 @@ export default function AboutPage() {
         <ul className="stack" style={{ margin: 0, paddingLeft: "1.2rem" }}>
           <li>Gemini is instructed to judge actions only, never appearance, age, gender or ethnicity.</li>
           <li>Clips are analysed and not stored; only the incident report is kept.</li>
-          <li>On-device face blurring before upload is part of the Tier-1 work in progress.</li>
+          <li>The live edge blurs faces on the device. Raw frames stay in the browser.</li>
           <li>All store data, receipts and example incidents are synthetic.</li>
         </ul>
       </section>

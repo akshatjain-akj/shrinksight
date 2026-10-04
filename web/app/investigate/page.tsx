@@ -117,7 +117,7 @@ export default function InvestigatePage() {
           <button type="button" className="btn" onClick={reset}>
             ← Investigate another clip
           </button>
-          <Link href="/" className="btn btn-ghost">
+          <Link href="/monitor" className="btn btn-ghost">
             See it in the monitor
           </Link>
           {result.cached && <span className="chip">Cached analysis · no AI quota used</span>}

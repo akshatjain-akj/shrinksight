@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+.secrets/
+*service-account*.json
+*adminsdk*.json
 
 # Python
 __pycache__/
@@ -36,3 +39,5 @@ spike-clips/
 # Local tool artifacts (never commit)
 .claude/
 .mcp.json
+web/AGENTS.md
+web/CLAUDE.md

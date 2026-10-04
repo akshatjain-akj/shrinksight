@@ -10,6 +10,7 @@ ZoneKind = Literal["scanner", "bagging", "shelf", "exit"]
 VerdictKind = Literal["SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH", "BENIGN", "INCONCLUSIVE"]
 IncidentStatus = Literal["NEEDS_REVIEW", "REJECTED", "RESOLVED_CONFIRMED", "RESOLVED_DISMISSED"]
 RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BYPASS"]
+ConcealmentOf = Literal["pocket", "bag", "shirt", "waistband"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 
 POSITIVE_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
@@ -139,6 +140,10 @@ class RuleSpec(BaseModel):
     active_from: str | None = Field(default=None, description="HH:MM 24h local time, or null for all day")
     active_to: str | None = Field(default=None, description="HH:MM 24h local time, or null for all day")
     sensitivity: Literal["low", "medium", "high"] | None = None
+    concealment_of: ConcealmentOf | None = Field(
+        default=None,
+        description="Which concealment the rule watches: pocket, bag, shirt, or waistband. Null means all of them.",
+    )
     severity: Severity = "MEDIUM"
     summary: str = Field(description="The rule restated in one short plain-English sentence")
 

@@ -15,6 +15,8 @@ Supported rule types:
 - DWELL: someone stays inside a zone longer than min_seconds (loitering).
 - ZONE_ENTRY: someone enters a zone (e.g. a restricted area or the exit during closed hours).
 - CONCEALMENT_SENSITIVITY: how sensitive concealment detection is in a zone (low/medium/high).
+  Set concealment_of when the manager names one hide: pocket, bag, shirt (under the shirt), or waistband.
+  Leave concealment_of null to watch all four.
 - SCANNER_BYPASS: alert when items move around the scanner zone at a self-checkout.
 
 Rules:
