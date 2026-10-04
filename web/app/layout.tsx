@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import NavBar from "@/components/NavBar";
+import Warmup from "@/components/Warmup";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,6 +17,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <a href="#main" className="skip-link">
           Skip to content
         </a>
+        <Warmup />
         <NavBar />
         <main id="main" className="page">
           {children}

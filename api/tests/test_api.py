@@ -103,6 +103,30 @@ def test_investigate_rejects_bad_requests(api):
                              "x-shrinksight-meta": meta_header(camera_id="cam-nope")}).status_code == 400
 
 
+def test_investigate_accepts_marked_stills(api):
+    main.app.state.gateway = FakeGateway([text("notes"), text(verdict_json())])
+    jpeg = b"\xff\xd8\xff\xd9"
+    res = api.post(
+        "/api/investigate",
+        files=[
+            ("clip", ("clip.webm", b"video-bytes", "video/webm")),
+            ("still", ("before.jpg", jpeg, "image/jpeg")),
+            ("still", ("reach.jpg", jpeg, "image/jpeg")),
+            ("still", ("hold.jpg", jpeg, "image/jpeg")),
+            ("still", ("after.jpg", b"not-a-jpeg", "image/jpeg")),
+        ],
+        headers={"x-shrinksight-meta": meta_header(camera_id="cam-aisle-4")},
+    )
+
+    assert res.status_code == 200
+    parts = main.app.state.gateway.calls[0][1][0].parts
+    images = [part for part in parts if part.inline_data and part.inline_data.mime_type == "image/jpeg"]
+    texts = [part.text for part in parts if part.text]
+    assert len(images) == 3
+    assert "Still: before" in texts
+    assert "Still: after" not in texts
+
+
 def test_investigate_rejects_oversized_clip(api):
     main.app.state.settings = replace(main.app.state.settings, max_clip_bytes=10)
     res = api.post("/api/investigate", content=b"x" * 11,

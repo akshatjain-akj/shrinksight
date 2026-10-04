@@ -4,6 +4,7 @@ export type CameraKind = "checkout" | "floor";
 export type VerdictKind = "SCAN_AVOIDANCE" | "CONCEALMENT" | "RULE_BREACH" | "BENIGN" | "INCONCLUSIVE";
 export type IncidentStatus = "NEEDS_REVIEW" | "REJECTED" | "RESOLVED_CONFIRMED" | "RESOLVED_DISMISSED";
 export type RuleType = "DWELL" | "ZONE_ENTRY" | "CONCEALMENT_SENSITIVITY" | "SCANNER_BYPASS";
+export type ConcealmentOf = "pocket" | "bag" | "shirt" | "waistband";
 export type Severity = "LOW" | "MEDIUM" | "HIGH";
 
 export interface Zone {
@@ -100,6 +101,7 @@ export interface RuleSpec {
   active_from: string | null;
   active_to: string | null;
   sensitivity: "low" | "medium" | "high" | null;
+  concealment_of?: ConcealmentOf | null;
   severity: Severity;
   summary: string;
 }

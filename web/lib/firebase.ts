@@ -27,6 +27,25 @@ export async function signInAnon(): Promise<string> {
 }
 
 let authReady: Promise<string> | null = null;
+let appCheckInstance: Promise<import("firebase/app-check").AppCheck> | null = null;
+
+/** Present only when NEXT_PUBLIC_APPCHECK_SITE_KEY is configured in the Firebase console. */
+export function appCheckToken(): Promise<string | null> {
+  const siteKey = process.env.NEXT_PUBLIC_APPCHECK_SITE_KEY;
+  if (!siteKey) return Promise.resolve(null);
+  appCheckInstance ??= import("firebase/app-check").then(({ initializeAppCheck, ReCaptchaV3Provider }) =>
+    initializeAppCheck(firebaseApp(), {
+      provider: new ReCaptchaV3Provider(siteKey),
+      isTokenAutoRefreshEnabled: true,
+    }),
+  );
+  return appCheckInstance
+    .then(async (appCheck) => {
+      const { getToken } = await import("firebase/app-check");
+      return (await getToken(appCheck)).token;
+    })
+    .catch(() => null);
+}
 
 /** Signs in anonymously once per page load; Firestore rules require a signed-in user to read. */
 export function ensureAuth(): Promise<string> {

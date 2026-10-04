@@ -1,8 +1,87 @@
 # ShrinkSight — Architecture & Flows
 
-> Companion to `PLAN.md`. Theme: **Retail & Commerce**. All diagrams are Mermaid (they render on GitHub) and can be
-> exported straight into the deck. Status: **design, awaiting approval** — names, thresholds and quotas are
-> starting points to be tuned during the day-1 spikes.
+> Companion to `PLAN.md`. Theme: **Retail & Commerce**. Diagrams below are the built prototype. Later sections
+> are the earlier design draft where they still differ (evidence clips in Cloud Storage, a web worker, a 3 MB cap).
+
+## Built data flow
+
+A live clip never lands in the store. Firestore keeps the store catalogue, the incident, and a cache pointer.
+
+```mermaid
+flowchart LR
+  cam[Webcam or file] --> edge[Browser MediaPipe]
+  edge --> blur[Face blur on canvas]
+  blur --> gate{Live camera?}
+  gate -->|score gate| clip[4s WebM]
+  gate -->|file ended, consent on| clip
+  clip --> api[Cloud Run /api/investigate]
+  api --> hit{Clip hash in cache?}
+  hit -->|yes| old[Return saved incident]
+  hit -->|no| gemini[Gemini watches clip]
+  gemini --> tools[Till, zone, SKU tools]
+  tools --> gemini
+  gemini --> verdict[Structured verdict]
+  verdict --> save[Write incident and cache key]
+  save --> sse[SSE result]
+  old --> sse
+  sse --> ui[Monitor, Playback, incident page]
+  ui --> review[Confirm or dismiss]
+  review --> save
+```
+
+Uploaded files skip the live score gate and still go to Gemini when playback ends and consent is on. The cache key is the clip hash plus camera, transaction, and model. It stores only the incident id.
+
+## Built store
+
+Deployed Cloud Run uses `FirestoreRepo`. Local runs and tests use `MemoryRepo` with the same collections. Seed writes `cameras`, `zones`, `skus`, `transactions`, `incidents`, and `rules` once, tracked by `meta/seed`. `counters` hold daily rate limits. The browser reads incidents and rules live from Firestore after anonymous sign-in.
+
+```mermaid
+erDiagram
+  CAMERA ||--o{ ZONE : zone_ids
+  CAMERA ||--o{ TRANSACTION : lane_id
+  CAMERA ||--o{ INCIDENT : camera_id
+  TRANSACTION ||--o{ INCIDENT : transaction_id
+  ZONE ||--o{ RULE : spec.zone_id
+  SKU ||--o{ INCIDENT : matched into unscanned_items
+  INCIDENT ||--o| CACHE : incident_id
+  CAMERA {
+    string id
+    string name
+    string kind
+    string lane_id
+  }
+  ZONE {
+    string id
+    string kind
+    bool high_value
+  }
+  SKU {
+    string sku
+    string name
+    float price_inr
+  }
+  TRANSACTION {
+    string id
+    string lane_id
+    string source
+  }
+  INCIDENT {
+    string id
+    string status
+    string verdict
+    float est_loss_inr
+    string source
+  }
+  RULE {
+    string id
+    string source_text
+    bool enabled
+  }
+  CACHE {
+    string clip_hash
+    string incident_id
+  }
+```
 
 ---
 

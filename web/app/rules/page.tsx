@@ -9,9 +9,19 @@ import type { Rule, RuleSpec, Zone } from "@/lib/types";
 const EXAMPLES = [
   "Alert if anyone stays at the spirits shelf for more than 45 seconds after 9pm",
   "Tell me if someone goes near the store exit between 10pm and 7am",
-  "Be extra sensitive to concealment at the snacks shelf",
+  "Alert if an item is put into a jacket pocket at the spirits shelf",
+  "Alert if an item is placed into a personal bag at the spirits shelf",
+  "Alert if an item is tucked under a shirt at the spirits shelf",
+  "Alert if an item is slid into the waistband at the spirits shelf",
   "Flag items going around the scanner at lane 2",
 ];
+
+const HIDE_LABEL: Record<string, string> = {
+  pocket: "Jacket pocket",
+  bag: "Personal bag",
+  shirt: "Under shirt",
+  waistband: "Waistband",
+};
 
 const TYPE_LABEL: Record<string, string> = {
   DWELL: "Loitering",
@@ -33,6 +43,7 @@ function SpecChips({ spec, zones }: { spec: RuleSpec; zones: Zone[] }) {
         </span>
       )}
       {spec.sensitivity && <span className="chip">{spec.sensitivity} sensitivity</span>}
+      {spec.concealment_of && <span className="chip">{HIDE_LABEL[spec.concealment_of]}</span>}
       <span className={`chip ${spec.severity === "HIGH" ? "tone-danger" : spec.severity === "MEDIUM" ? "tone-warning" : ""}`}>
         {spec.severity.toLowerCase()} severity
       </span>

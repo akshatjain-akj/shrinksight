@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+.secrets/
+*service-account*.json
+*adminsdk*.json
 
 # Python
 __pycache__/

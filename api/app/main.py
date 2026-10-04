@@ -9,9 +9,10 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from . import selftest
+from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
 from .investigator import investigate, normalise_mime
@@ -26,6 +27,7 @@ app = FastAPI(title="ShrinkSight API", docs_url="/api/docs", openapi_url="/api/o
 app.state.settings = settings
 app.state.repo = None
 app.state.gateway = None
+app.state.clip_signer = None
 
 if settings.cors_origins:
     app.add_middleware(
@@ -123,6 +125,20 @@ def transactions(lane_id: str | None = Query(default=None, max_length=10)) -> li
     return [{**t.model_dump(), "total_inr": t.total_inr} for t in txns]
 
 
+# ---------- clips ----------
+@app.get("/api/clips/{camera_id}")
+def clip_url(camera_id: str) -> dict:
+    """A 15-minute HTTPS URL for a demo clip. Unknown cameras have no stored video."""
+    if object_for(camera_id) is None:
+        raise HTTPException(404, "No clip for this camera")
+    signer = getattr(app.state, "clip_signer", None)
+    try:
+        url = signer(camera_id) if signer else sign_seed_clip(cfg(), camera_id)
+    except Exception as exc:
+        raise HTTPException(503, "Could not sign the clip URL") from exc
+    return {"camera_id": camera_id, "url": url, "expires_in": SIGNED_URL_MINUTES * 60}
+
+
 # ---------- incidents ----------
 @app.get("/api/incidents")
 def incidents(limit: int = Query(default=50, ge=1, le=100)) -> list[dict]:
@@ -178,6 +194,7 @@ class CompileIn(BaseModel):
 
 @app.post("/api/rules/compile")
 def rules_compile(body: CompileIn, request: Request) -> dict:
+    enforce_app_check(request)
     repo = get_repo()
     enforce_limits(request, repo, "compile", cfg().daily_rule_compiles)
     try:
@@ -220,10 +237,46 @@ def rules_patch(rule_id: str, body: RulePatch) -> dict:
 
 
 # ---------- investigate ----------
+class Tier1EventIn(BaseModel):
+    t: str = Field(max_length=16)
+    kind: str = Field(max_length=40)
+    score: float = Field(ge=0, le=1)
+    detail: str = Field(default="", max_length=240)
+    camera_id: str | None = Field(default=None, max_length=40)
+    trigger: str | None = Field(default=None, max_length=20)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    box: list[int] | None = Field(default=None, max_length=4)
+
+    @field_validator("trigger")
+    @classmethod
+    def known_trigger(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"hot_score", "lane_leave"}:
+            raise ValueError("trigger must be hot_score or lane_leave")
+        return value
+
+    @field_validator("box")
+    @classmethod
+    def box_range(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if len(value) != 4 or any(n < 0 or n > 1000 for n in value):
+            raise ValueError("box must be four integers in 0..1000")
+        return value
+
+
 class InvestigateMeta(BaseModel):
     camera_id: str = Field(max_length=40)
     transaction_id: str | None = Field(default=None, max_length=40)
     receipt: list[ReceiptLine] | None = Field(default=None, max_length=30)
+    tier1_events: list[Tier1EventIn] = Field(default_factory=list, max_length=12)
+
+
+def enforce_app_check(request: Request) -> None:
+    """Requires the header only when APP_CHECK_ENFORCE is set. Token verification needs the console key."""
+    if not cfg().app_check_enforce:
+        return
+    if not request.headers.get("x-firebase-appcheck"):
+        raise HTTPException(401, "App Check token missing. Refresh the page and try again.")
 
 
 def _parse_meta(header: str | None) -> InvestigateMeta:
@@ -234,6 +287,39 @@ def _parse_meta(header: str | None) -> InvestigateMeta:
         return InvestigateMeta.model_validate(json.loads(raw))
     except (binascii.Error, ValueError, ValidationError) as exc:
         raise HTTPException(400, "Invalid x-shrinksight-meta header") from exc
+
+
+STILL_LABELS = ("before", "reach", "hold", "after")
+STILL_LIMIT = 200_000
+
+
+async def _read_marked(request: Request, limit: int) -> tuple[bytes, str, list[tuple[str, bytes]]]:
+    form = await request.form()
+    upload = form.get("clip")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(400, "Missing clip")
+    mime = normalise_mime(getattr(upload, "content_type", "") or "")
+    if mime is None:
+        raise HTTPException(415, "Unsupported video type. Use MP4, WebM or MOV.")
+    clip = await upload.read()
+    if not clip:
+        raise HTTPException(400, "Empty clip")
+    if len(clip) > limit:
+        raise HTTPException(413, f"Clip too large (max {limit // (1024 * 1024)} MB)")
+    stills: list[tuple[str, bytes]] = []
+    for item in form.getlist("still"):
+        if not hasattr(item, "read") or len(stills) >= 4:
+            continue
+        label = (getattr(item, "filename", "") or "").rsplit(".", 1)[0]
+        if label not in STILL_LABELS:
+            continue
+        data = await item.read()
+        if len(data) > STILL_LIMIT or not data.startswith(b"\xff\xd8"):
+            continue
+        stills.append((label, data))
+    order = {label: index for index, label in enumerate(STILL_LABELS)}
+    stills.sort(key=lambda item: order[item[0]])
+    return clip, mime, stills
 
 
 async def _read_clip(request: Request, limit: int) -> bytes:
@@ -257,7 +343,10 @@ async def investigate_clip(request: Request) -> StreamingResponse:
 
     Responds with Server-Sent Events: `progress` events, then one `result` or `error`.
     """
-    mime = normalise_mime(request.headers.get("content-type", ""))
+    enforce_app_check(request)
+    content_type = request.headers.get("content-type", "")
+    marked = content_type.startswith("multipart/form-data")
+    mime = "video/webm" if marked else normalise_mime(content_type)
     if mime is None:
         raise HTTPException(415, "Unsupported video type. Use MP4, WebM or MOV.")
     meta = _parse_meta(request.headers.get("x-shrinksight-meta"))
@@ -278,13 +367,21 @@ async def investigate_clip(request: Request) -> StreamingResponse:
                 raise HTTPException(400, "Unknown transaction")
 
     await asyncio.to_thread(enforce_limits, request, repo, "investigate", cfg().daily_investigations)
-    clip = await _read_clip(request, cfg().max_clip_bytes)
+    if marked:
+        clip, mime, stills = await _read_marked(request, cfg().max_clip_bytes)
+    else:
+        clip = await _read_clip(request, cfg().max_clip_bytes)
+        stills = []
     gateway = get_gateway()
     if transaction is not None and transaction.source == "live":
         await asyncio.to_thread(repo.save_transaction, transaction)
 
     def events():
-        for event in investigate(clip, mime, camera, transaction, repo, gateway, cfg()):
+        for event in investigate(
+            clip, mime, camera, transaction, repo, gateway, cfg(),
+            tier1_events=[e.model_dump() for e in meta.tier1_events],
+            stills=stills,
+        ):
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

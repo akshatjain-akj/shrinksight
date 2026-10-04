@@ -33,7 +33,7 @@ export default function IncidentPage() {
   return (
     <>
       <p style={{ marginTop: 0 }}>
-        <Link href="/">← Back to monitor</Link>
+        <Link href="/monitor">← Back to monitor</Link>
       </p>
       <Suspense fallback={<Spinner label="Loading incident…" />}>
         <IncidentLoader />

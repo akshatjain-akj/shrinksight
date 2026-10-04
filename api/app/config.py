@@ -45,6 +45,10 @@ class Settings:
 
     # "firestore" on Cloud Run; "memory" for local runs without Google credentials (data resets on restart)
     repo_backend: str = field(default_factory=lambda: _env("REPO_BACKEND", "firestore"))
+    # Turn on only after a reCAPTCHA site key is set in the Firebase console.
+    app_check_enforce: bool = field(
+        default_factory=lambda: _env("APP_CHECK_ENFORCE").lower() in {"1", "true", "yes"}
+    )
 
     currency: str = "INR"
     cors_origins: tuple[str, ...] = field(
