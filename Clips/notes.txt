@@ -1,0 +1,4 @@
+clip1.mp4: 5 items ALL 5 items scanned (bottle,fruit,biscuit,flower,box)
+clip2.mp4: 5 items: item 3 biscuit not scanned at 0.06, went around the scanner (behind the body)
+clip3.mp4 5 items:  item 2 (at 0.02) item 3 (at 0:04) , item 4 (at 0:06) not scanned
+clip4.mp4 2 items: ALL 2 items scanned
