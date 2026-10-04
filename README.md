@@ -8,7 +8,16 @@ ShrinkSight is a two-tier loss-prevention system. On-device vision (MediaPipe, i
 moments. A Gemini agent then investigates each one: it watches the clip, cross-checks it against the till log
 through tool calls, and returns a structured, evidence-backed incident, or rejects the false alarm.
 
-- **Live URL:** https://shrinksight-app.web.app *(setup phase: currently shows the component self-test)*
+- **Live URL:** https://shrinksight-app.web.app
+
+### What you can try (prototype v0.2)
+| Page | What it does |
+|---|---|
+| **Monitor** (`/`) | Live incident feed (Firestore real-time), false-alarm funnel, camera tiles |
+| **Incident** (`/incident?id=…`) | Gemini's verdict, agent steps, *seen on camera vs. till receipt*, estimated loss in ₹, human Confirm / Dismiss |
+| **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress |
+| **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable |
+| **Setup check** (`/setup`) | Verifies Cloud Run, Firestore, Storage, Auth and Gemini |
 - **Plan:** [`docs/PLAN.md`](docs/PLAN.md) · **Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   **Setup & deployment:** [`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md) ·
   **New teammate?** [`docs/TEAMMATE_SETUP.md`](docs/TEAMMATE_SETUP.md)
@@ -41,7 +50,8 @@ uv run pytest -q              # tests (no cloud access needed)
 uv run ruff check .
 cp ../.env.example .env       # then type your own Gemini key into api/.env
 set -a; . ./.env; set +a
-uv run uvicorn app.main:app --reload --port 8080
+# REPO_BACKEND=memory runs without Google credentials (seed data in memory, resets on restart)
+REPO_BACKEND=memory CORS_ORIGINS=http://localhost:3000 uv run uvicorn app.main:app --reload --port 8080
 ```
 
 **Web**
@@ -59,7 +69,9 @@ NEXT_PUBLIC_API_BASE=http://localhost:8080 npm run dev   # http://localhost:3000
 | `GEMINI_MODEL` | Optional model override (default in `api/app/config.py`) |
 | `GCP_PROJECT` | Google Cloud project (`shrinksight-app`) |
 | `EVIDENCE_BUCKET` | Evidence bucket (`shrinksight-app-evidence`) |
-| `CORS_ORIGINS` | Local dev only, e.g. `http://localhost:3000` |
+| `GEMINI_INVESTIGATOR_MODEL` | Optional model for clip investigations (defaults to `GEMINI_MODEL`) |
+| `REPO_BACKEND` | `firestore` (default) or `memory` for local runs |
+| `CORS_ORIGINS` | Local dev (`http://localhost:3000`), or the Hosting origin if streaming goes direct to Cloud Run |
 
 ## Deployment
 Merging to `main` makes GitHub Actions run the tests, build the API image, deploy it to Cloud Run, deploy the

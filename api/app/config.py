@@ -10,18 +10,45 @@ def _env(name: str, default: str = "") -> str:
     return value or default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    return int(raw) if raw.isdigit() else default
+
+
 @dataclass(frozen=True)
 class Settings:
     version: str = field(default_factory=lambda: _env("APP_VERSION", "dev"))
     gcp_project: str = field(default_factory=lambda: _env("GCP_PROJECT", _env("GOOGLE_CLOUD_PROJECT")))
     evidence_bucket: str = field(default_factory=lambda: _env("EVIDENCE_BUCKET"))
     gemini_api_key: str = field(default_factory=lambda: _env("GEMINI_API_KEY"))
+    # Used for rule compiling and the self-test
     gemini_model: str = field(default_factory=lambda: _env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL))
-    gemini_timeout_ms: int = 20_000
+    # Used for clip investigations (switch to a Flash model for hero runs)
+    investigator_model: str = field(
+        default_factory=lambda: _env("GEMINI_INVESTIGATOR_MODEL", _env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL))
+    )
+    gemini_timeout_ms: int = 25_000
+    gemini_max_retries: int = 2
     # Minimum seconds between live Gemini self-test calls (protects the free-tier quota).
     gemini_selftest_cooldown_s: int = 60
+
+    # Investigation limits
+    max_clip_bytes: int = 15 * 1024 * 1024
+    clip_fps: int = 5
+    agent_max_tool_calls: int = 4
+    agent_deadline_s: int = 45
+
+    # Abuse / quota protection
+    per_ip_per_minute: int = field(default_factory=lambda: _env_int("PER_IP_PER_MINUTE", 6))
+    daily_investigations: int = field(default_factory=lambda: _env_int("DAILY_INVESTIGATIONS", 40))
+    daily_rule_compiles: int = field(default_factory=lambda: _env_int("DAILY_RULE_COMPILES", 100))
+
+    # "firestore" on Cloud Run; "memory" for local runs without Google credentials (data resets on restart)
+    repo_backend: str = field(default_factory=lambda: _env("REPO_BACKEND", "firestore"))
+
+    currency: str = "INR"
     cors_origins: tuple[str, ...] = field(
-        default_factory=lambda: tuple(o for o in _env("CORS_ORIGINS").split(",") if o)
+        default_factory=lambda: tuple(o.strip() for o in _env("CORS_ORIGINS").split(",") if o.strip())
     )
 
 

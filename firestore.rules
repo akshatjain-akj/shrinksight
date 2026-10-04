@@ -1,10 +1,27 @@
 rules_version = '2';
 
-// Setup phase: browsers get no direct Firestore access.
-// The Cloud Run API uses its service account (IAM), which these rules don't apply to.
-// Read access for incidents/rules will be added with those features (see docs/ARCHITECTURE.md §15).
+// Browsers (anonymous Firebase Auth) may READ what the console displays live.
+// All writes go through the Cloud Run API, which uses its service account (IAM) and bypasses these rules.
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /incidents/{id} {
+      allow read: if signedIn();
+    }
+    match /rules/{id} {
+      allow read: if signedIn();
+    }
+    match /cameras/{id} {
+      allow read: if signedIn();
+    }
+    match /zones/{id} {
+      allow read: if signedIn();
+    }
+
+    // Everything else (transactions, cache, counters, meta, selftest) is server-only.
     match /{document=**} {
       allow read, write: if false;
     }

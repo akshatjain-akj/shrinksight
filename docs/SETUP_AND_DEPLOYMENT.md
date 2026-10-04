@@ -310,7 +310,7 @@ Swap roles any time someone is blocked.
 - **Commit prefixes:** `feat`, `fix`, `chore`, `docs`, `test`.
 - **Secrets:** the Gemini key lives only in Secret Manager + each dev's own gitignored `.env`. GitHub holds
   **no secrets**, only non-secret variables.
-- **Honest history:** humans commit; changes Claude helped with carry a `Co-Authored-By: Claude` line. No prior code is imported.
+- **Honest history:** team members make every commit themselves; no prior code is imported.
 - **Shared AI context:** `CLAUDE.md` (the context rules) lives in the repo, so both devs' Claude Code sessions follow the same rules.
 - **Data:** only synthetic records and footage staged by the team with signed consent. No real PII anywhere.
 

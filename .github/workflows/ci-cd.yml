@@ -48,6 +48,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+        env:
+          # Optional: direct Cloud Run URL for the streaming endpoint if Hosting buffers SSE
+          NEXT_PUBLIC_STREAM_BASE: ${{ vars.STREAM_BASE }}
       - uses: actions/upload-artifact@v4
         with:
           name: web-out
@@ -95,9 +98,9 @@ jobs:
             --service-account "${{ vars.RUNTIME_SA }}" \
             --allow-unauthenticated \
             --min-instances 0 --max-instances 2 --concurrency 20 \
-            --cpu 1 --memory 512Mi --timeout 60 \
+            --cpu 1 --memory 512Mi --timeout 120 \
             --set-secrets GEMINI_API_KEY=gemini-api-key:latest \
-            --set-env-vars "GCP_PROJECT=$PROJECT_ID,EVIDENCE_BUCKET=${{ vars.EVIDENCE_BUCKET }},GEMINI_MODEL=${{ vars.GEMINI_MODEL }},APP_VERSION=${GITHUB_SHA::7}" \
+            --set-env-vars "^@^GCP_PROJECT=$PROJECT_ID@EVIDENCE_BUCKET=${{ vars.EVIDENCE_BUCKET }}@GEMINI_MODEL=${{ vars.GEMINI_MODEL }}@GEMINI_INVESTIGATOR_MODEL=${{ vars.GEMINI_INVESTIGATOR_MODEL }}@CORS_ORIGINS=${{ vars.CORS_ORIGINS }}@APP_VERSION=${GITHUB_SHA::7}" \
             --quiet
 
       - uses: actions/setup-node@v4

@@ -1,5 +1,6 @@
 import { getApps, initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 
 // Firebase web config is public by design (it identifies the project, it doesn't grant access).
 // Access is controlled by Firestore rules, App Check and API-key restrictions.
@@ -16,7 +17,22 @@ export function firebaseApp() {
   return getApps()[0] ?? initializeApp(firebaseConfig);
 }
 
+export function db() {
+  return getFirestore(firebaseApp());
+}
+
 export async function signInAnon(): Promise<string> {
   const cred = await signInAnonymously(getAuth(firebaseApp()));
   return cred.user.uid;
+}
+
+let authReady: Promise<string> | null = null;
+
+/** Signs in anonymously once per page load; Firestore rules require a signed-in user to read. */
+export function ensureAuth(): Promise<string> {
+  authReady ??= signInAnon().catch((err) => {
+    authReady = null;
+    throw err;
+  });
+  return authReady;
 }
