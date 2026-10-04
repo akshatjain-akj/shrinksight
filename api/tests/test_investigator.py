@@ -165,14 +165,26 @@ def test_marked_stills_are_sent_ahead_of_the_clip(repo, settings):
 
     assert events[-1]["type"] == "result"
     texts = [part.text for part in gateway.calls[0][1][0].parts if part.text]
-    images = [part for part in gateway.calls[0][1][0].parts if part.inline_data and part.inline_data.mime_type == "image/jpeg"]
+    images = [p for p in gateway.calls[0][1][0].parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
     assert "Still: before" in texts
     assert "Still: after" in texts
     assert len(images) == 4
     verdict_images = [
-        part for part in gateway.calls[-1][1][0].parts if part.inline_data and part.inline_data.mime_type == "image/jpeg"
+        p for p in gateway.calls[-1][1][0].parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"
     ]
     assert len(verdict_images) == 4
+
+
+def test_metadata_rejection_retries_plain_clip_in_both_passes(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("bad video metadata", 400), text("notes"), text(verdict_json())])
+
+    events = run(repo, gateway, settings)
+
+    assert events[-1]["type"] == "result"
+    verdict_model, verdict_contents, verdict_config = gateway.calls[-1]
+    videos = [p for p in verdict_contents[0].parts if p.inline_data and p.inline_data.mime_type == "video/webm"]
+    assert videos and all(p.video_metadata is None for p in videos)
+    assert verdict_config.media_resolution is None
 
 
 def test_normalise_mime():

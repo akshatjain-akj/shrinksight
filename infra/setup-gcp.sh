@@ -73,17 +73,22 @@ gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
 gcloud projects add-iam-policy-binding "$PROJECT_ID" --member "serviceAccount:$RUNTIME_SA" \
   --role roles/datastore.user --condition=None >/dev/null
 
-step "5/7 Evidence bucket gs://$BUCKET (private, objects deleted after 1 day)"
+step "5/7 Evidence bucket gs://$BUCKET (private; evidence/ deleted after 1 day, seed/ kept)"
 if ! exists gcloud storage buckets describe "gs://$BUCKET"; then
   gcloud storage buckets create "gs://$BUCKET" --location "$REGION" \
     --uniform-bucket-level-access --public-access-prevention
 fi
 LIFECYCLE_FILE="$(mktemp)"
-echo '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}' >"$LIFECYCLE_FILE"
+# Only live evidence expires. Demo clips under seed/ (and selftest/ pings) are not touched.
+echo '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1, "matchesPrefix": ["evidence/", "selftest/"]}}]}' \
+  >"$LIFECYCLE_FILE"
 gcloud storage buckets update "gs://$BUCKET" --lifecycle-file "$LIFECYCLE_FILE" >/dev/null
 rm -f "$LIFECYCLE_FILE"
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$RUNTIME_SA" \
   --role roles/storage.objectAdmin >/dev/null
+# Lets the API sign short-lived clip URLs (IAM signBlob) without any key file.
+gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+  --member "serviceAccount:$RUNTIME_SA" --role roles/iam.serviceAccountTokenCreator >/dev/null
 
 step "6/7 Gemini API key -> Secret Manager '$SECRET'"
 if ! exists gcloud secrets describe "$SECRET"; then

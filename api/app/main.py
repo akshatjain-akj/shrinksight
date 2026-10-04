@@ -34,7 +34,7 @@ if settings.cors_origins:
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["content-type", "x-shrinksight-meta"],
+        allow_headers=["content-type", "x-shrinksight-meta", "x-firebase-appcheck"],
     )
 
 
@@ -294,7 +294,11 @@ STILL_LIMIT = 200_000
 
 
 async def _read_marked(request: Request, limit: int) -> tuple[bytes, str, list[tuple[str, bytes]]]:
-    form = await request.form()
+    # Reject oversized uploads before parsing: clip + 4 stills + form overhead.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit + 4 * STILL_LIMIT + 64 * 1024:
+        raise HTTPException(413, f"Clip too large (max {limit // (1024 * 1024)} MB)")
+    form = await request.form(max_files=5, max_fields=5)
     upload = form.get("clip")
     if upload is None or not hasattr(upload, "read"):
         raise HTTPException(400, "Missing clip")

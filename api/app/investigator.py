@@ -281,7 +281,8 @@ def investigate(
                     raise
                 stripped = True
                 yield _progress("watching", "Retrying the clip without video metadata")
-                contents = [types.Content(role="user", parts=[*marked, plain_video, types.Part.from_text(text=context)])]
+                plain_parts = [*marked, plain_video, types.Part.from_text(text=context)]
+                contents = [types.Content(role="user", parts=plain_parts)]
                 agent_config = types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     tools=[types.Tool(function_declarations=_tool_declarations(types, camera))],
@@ -314,7 +315,11 @@ def investigate(
 
         # ---- 2. Verdict pass with forced JSON ----
         yield _progress("report", "Writing the incident report")
-        verdict = _verdict_pass(types, gateway, model, video, context, tool_results, notes, started, settings, marked)
+        # If the model rejected video metadata above, the verdict pass must send the plain clip too.
+        verdict = _verdict_pass(
+            types, gateway, model, plain_video if stripped else video, context, tool_results, notes, started,
+            settings, marked, plain=stripped,
+        )
 
         # ---- 3. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
@@ -332,12 +337,14 @@ def _check_deadline(started: float, settings: Settings) -> None:
         raise TimeoutError
 
 
-def _verdict_pass(types, gateway, model, video, context, tool_results, notes, started, settings, marked=None) -> VerdictOut:
+def _verdict_pass(
+    types, gateway, model, video, context, tool_results, notes, started, settings, marked=None, plain=False
+) -> VerdictOut:
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
         response_mime_type="application/json",
         response_schema=VerdictOut,
-        media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+        media_resolution=None if plain else types.MediaResolution.MEDIA_RESOLUTION_LOW,
         temperature=0,
     )
     briefing = (

@@ -10,10 +10,13 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 
 - **Live URL:** https://shrinksight-app.web.app
 
-### What you can try (prototype v0.2)
+### What you can try
 | Page | What it does |
 |---|---|
-| **Monitor** (`/`) | Live incident feed (Firestore real-time), false-alarm funnel, camera tiles |
+| **Overview** (`/`) | What ShrinkSight does, how the two tiers work, architecture |
+| **Monitor** (`/monitor`) | Camera wall with live alert rail (Firestore real-time), false-alarm funnel |
+| **Playback** (`/playback`) | Search incidents by date, camera and event; replay the incident timeline |
+| **Live edge** (`/edge`) | Tier 1 on this device: MediaPipe pose/face/objects, on-device face blur, score gate → Gemini |
 | **Incident** (`/incident?id=…`) | Gemini's verdict, agent steps, *seen on camera vs. till receipt*, estimated loss in ₹, human Confirm / Dismiss |
 | **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress |
 | **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable |
