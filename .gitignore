@@ -32,3 +32,7 @@ spike-clips/
 .DS_Store
 .idea/
 .vscode/
+
+# Local tool artifacts (never commit)
+.claude/
+.mcp.json
