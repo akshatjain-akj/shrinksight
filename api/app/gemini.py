@@ -19,9 +19,12 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 RETRYABLE_CODES = {429, 500, 502, 503, 504}
-# Errors where another model is worth trying: too slow, overloaded, rate limited, server trouble, or not available.
-FALLBACK_CODES = {404, 408, 429, 500, 502, 503, 504}
-MIN_CALL_SECONDS = 3
+# Fast failures where another model is worth trying: overloaded, rate limited, server trouble, or not available.
+# Not timeouts: a slow model has used the time a backup would need.
+FALLBACK_CODES = {404, 429, 500, 502, 503, 504}
+# The Gemini API rejects requests whose deadline is under 10 s; keep a little headroom.
+MIN_REQUEST_MS = 10_000
+MIN_CALL_SECONDS = 12
 
 
 class GeminiUnavailable(Exception):
@@ -112,6 +115,7 @@ class GeminiGateway:
                 raise GeminiUnavailable("Ran out of time waiting for Gemini.", 408)
             cap_ms = timeout_ms or (self._timeout_ms if deadline is None else int((left - 1) * 1000))
             call_ms = int(min(cap_ms, (left - 1) * 1000)) if deadline is not None else cap_ms
+            call_ms = max(MIN_REQUEST_MS, call_ms)
             call_config = config.model_copy(update={"http_options": self._types.HttpOptions(timeout=call_ms)})
             try:
                 response = self._client.models.generate_content(model=model, contents=contents, config=call_config)
@@ -189,7 +193,7 @@ def call_with_fallback(
             return gateway.generate(model, contents, config_for(model), deadline=deadline, retries=retries), model
         except GeminiUnavailable as exc:
             last = exc
-            if exc.code not in FALLBACK_CODES or seconds_left(deadline) < 8:
+            if exc.code not in FALLBACK_CODES or seconds_left(deadline) < MIN_CALL_SECONDS:
                 raise
     raise last or GeminiUnavailable("No Gemini model is configured.")
 

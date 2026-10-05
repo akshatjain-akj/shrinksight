@@ -42,6 +42,10 @@ from .reconcile import apply_receipt_rule, confirmed_list_text, receipt_lines_te
 from .repo import Repo, match_sku
 from .zones import from_crop, zones_context
 
+# A backup model only helps if it can still watch the whole clip; re-checks need a little less.
+BACKUP_MIN_SECONDS = 20
+RECHECK_MIN_SECONDS = 15
+
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
 PROMPT_VERSION = "2026-10-10.crop-custody"
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
@@ -269,7 +273,9 @@ def _still_parts(types, stills: list[tuple[str, bytes]], plain: bool = False) ->
     )]
     for label, data in stills:
         parts.append(types.Part.from_text(text=STILL_TEXT.get(label, f"Still: {label.replace('_', ' ')}")))
-        level = "HIGH" if label in CLOSE_UP_LABELS else "MEDIUM"
+        # Only the item-pile close-up needs full detail (it's where items are counted); the rest stay light so
+        # Gemini answers faster.
+        level = "HIGH" if label == "pickup_start" else "MEDIUM" if label in CLOSE_UP_LABELS else "LOW"
         parts.append(types.Part(
             inline_data=types.Blob(data=data, mime_type="image/jpeg"),
             media_resolution=_resolution(types, level, plain),
@@ -312,15 +318,15 @@ def _ms(since: float) -> int:
     return round((time.monotonic() - since) * 1000)
 
 
-def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float, timeout_ms: int):
+def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float):
     """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, plain)."""
     for index, model in enumerate(models):
         plain = False
         while True:
             try:
+                # The main call may use all the time left: a slow answer beats abandoning it.
                 result = gateway.generate(
-                    model, contents_for(plain), config_for(model, plain), deadline=deadline, retries=1,
-                    timeout_ms=timeout_ms,
+                    model, contents_for(plain), config_for(model, plain), deadline=deadline, retries=1
                 )
                 return result, model, plain
             except GeminiUnavailable as exc:
@@ -330,9 +336,9 @@ def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadli
                     yield _progress("watching", "Retrying the clip without video settings")
                     continue
                 has_backup = index < len(models) - 1
-                if exc.code in FALLBACK_CODES and has_backup and seconds_left(deadline) > 12:
+                if exc.code in FALLBACK_CODES and has_backup and seconds_left(deadline) >= BACKUP_MIN_SECONDS:
                     backup = models[index + 1]
-                    why = {408: "is slow", 404: "isn't available", 429: "is rate limited"}.get(exc.code, "is busy")
+                    why = {404: "isn't available", 429: "is rate limited"}.get(exc.code, "is busy")
                     yield _progress("fallback", f"{model} {why} · switching to backup model {backup}", model=backup)
                     break
                 raise
@@ -448,15 +454,13 @@ def investigate(
         step = time.monotonic()
         stage = "watching the clip"
         yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
-        result, model, plain = yield from _watch(
-            gateway, models, contents_for, config_for, deadline, settings.watch_timeout_ms
-        )
+        result, model, plain = yield from _watch(gateway, models, contents_for, config_for, deadline)
         timings["watch_ms"] = _ms(step)
         first, hard, soft, json_error = _parse(result.text, receipt, confirmed)
         chosen, chosen_hard = (first, hard) if first is not None else (None, [])
 
         # ---- 4. One re-check, only if the answer doesn't add up and there's time ----
-        if (json_error or hard or soft) and seconds_left(deadline) > 12:
+        if (json_error or hard or soft) and seconds_left(deadline) >= RECHECK_MIN_SECONDS:
             step = time.monotonic()
             stage = "double-checking"
             yield _progress("recheck", "Double-checking against the till receipt" if receipt else "Double-checking")
@@ -470,10 +474,7 @@ def investigate(
                 follow_up.append(result.content)
             follow_up.append(types.Content(role="user", parts=[types.Part.from_text(text=problem)]))
             try:
-                again = gateway.generate(
-                    model, follow_up, config_for(model, plain), deadline=deadline, retries=0,
-                    timeout_ms=settings.watch_timeout_ms,
-                )
+                again = gateway.generate(model, follow_up, config_for(model, plain), deadline=deadline, retries=0)
                 second, hard2, _, _ = _parse(again.text, receipt, confirmed)
                 if second is not None and (not hard2 or chosen is None or chosen_hard):
                     chosen, chosen_hard = second, hard2
