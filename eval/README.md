@@ -14,6 +14,7 @@ Edit `manifest.json`. One entry per video file:
 | `receipt` | What the till actually scanned. Prices can be `0` |
 | `expected.verdict` | `BENIGN` if everything was paid for, `SCAN_AVOIDANCE` / `CONCEALMENT` otherwise |
 | `expected.unscanned` | Items handled but **not** on the receipt |
+| `inventory` (optional) | The items really in the pile, e.g. `["bottle", "flat cloth flower", "black biscuit packet"]`. Runs as if this list was confirmed in the browser, so you can measure tracking separately from discovery |
 | `seconds` (optional) | Clip length; clips over 10 s are sampled at 3 fps, as on the website |
 | `zones` (optional) | Where the scanner/bagging areas are in this clip. On the Investigate page, mark them and click **Copy zones for eval**, then paste here |
 
@@ -25,6 +26,7 @@ cd api
 uv run python ../eval/run.py --clips ../Clips --tag v2                          # default model
 uv run python ../eval/run.py --clips ../Clips --tag v2 --model gemini-3.5-flash --sleep 45
 uv run python ../eval/run.py --clips ../Clips --only clip2.mp4 clip3.mp4         # a subset
+uv run python ../eval/run.py --clips ../Clips --tag v5 --repeat 3                # stability: each clip 3 times
 ```
 Uses your key from `api/.env`, an in-memory store (nothing touches production) and your own free-tier quota.
 Each clip costs about 2–3 Gemini requests: keep `--sleep` at ~15 s for Flash Lite and ~45 s for Flash.

@@ -108,7 +108,11 @@ function zoneCrop(video: HTMLVideoElement, zone: ZoneShape, maxWidth: number): H
  * Four evenly spaced stills with the zone outlines drawn on, plus close-ups of the marked item pile (start),
  * scanner (mid) and bagging area (end). Close-ups reuse the same four seeks, so they cost almost nothing.
  */
-export async function markedStills(url: string, zones: ZoneShape[]): Promise<MarkedStill[]> {
+export async function markedStills(
+  url: string,
+  zones: ZoneShape[],
+  options: { skipPickup?: boolean } = {},
+): Promise<MarkedStill[]> {
   const video = await openVideo(url);
   const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 4;
   const canvas = canvasFor(video);
@@ -117,7 +121,7 @@ export async function markedStills(url: string, zones: ZoneShape[]): Promise<Mar
   const closeUps: MarkedStill[] = [];
   for (const [index, fraction] of [0.15, 0.4, 0.65, 0.9].entries()) {
     await seek(video, duration * fraction);
-    for (const want of CLOSE_UPS.filter((c) => c.atIndex === index)) {
+    for (const want of CLOSE_UPS.filter((c) => c.atIndex === index && !(options.skipPickup && c.kind === "pickup"))) {
       const zone = zones.find((z) => z.kind === want.kind);
       const crop = zone ? zoneCrop(video, zone, want.maxWidth) : null;
       if (crop) closeUps.push({ label: want.label, blob: await toJpeg(crop, want.kind === "pickup" ? 0.85 : 0.8) });
@@ -130,4 +134,108 @@ export async function markedStills(url: string, zones: ZoneShape[]): Promise<Mar
   }
   video.removeAttribute("src");
   return [...stills, ...closeUps];
+}
+
+// ---------- Item-pile views for the inventory call ----------
+
+export interface PileViews {
+  views: { label: "pile" | "left" | "right"; blob: Blob }[];
+  /** The whole-pile view (enhanced). Inventory boxes are in its coordinates; numbered marks are drawn on it. */
+  base: HTMLCanvasElement;
+}
+
+/** Brightens dark scenes a little so dark items (a black packet on a dark counter) stand out. */
+function enhanceFilter(source: HTMLVideoElement, sx: number, sy: number, sw: number, sh: number): string {
+  const probe = document.createElement("canvas");
+  probe.width = 32;
+  probe.height = 32;
+  const pctx = probe.getContext("2d", { willReadFrequently: true })!;
+  pctx.drawImage(source, sx, sy, sw, sh, 0, 0, 32, 32);
+  const data = pctx.getImageData(0, 0, 32, 32).data;
+  let sum = 0;
+  for (let i = 0; i < data.length; i += 4) sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  const mean = sum / (data.length / 4) / 255;
+  const brightness = Math.min(1.6, Math.max(1, 0.5 / Math.max(mean, 0.05)));
+  return `brightness(${brightness.toFixed(2)}) contrast(1.2)`;
+}
+
+function cropTo(video: HTMLVideoElement, sx: number, sy: number, sw: number, sh: number, maxWidth: number, filter: string) {
+  const scale = Math.min(2, maxWidth / sw);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  const ctx = canvas.getContext("2d")!;
+  ctx.filter = filter;
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/**
+ * Three views of the item pile from the full-resolution original at the start of the clip: the whole pile and
+ * overlapping left/right halves zoomed in. Sent together in ONE inventory request.
+ */
+export async function pileViews(url: string, pile: ZoneShape): Promise<PileViews> {
+  const video = await openVideo(url);
+  try {
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 4;
+    await seek(video, duration * 0.15);
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const xs = pile.polygon.map((p) => p.x * vw);
+    const ys = pile.polygon.map((p) => p.y * vh);
+    const padX = (Math.max(...xs) - Math.min(...xs)) * 0.15;
+    const padY = (Math.max(...ys) - Math.min(...ys)) * 0.15;
+    const sx = Math.max(0, Math.min(...xs) - padX);
+    const sy = Math.max(0, Math.min(...ys) - padY);
+    const sw = Math.min(vw - sx, Math.max(...xs) - Math.min(...xs) + padX * 2);
+    const sh = Math.min(vh - sy, Math.max(...ys) - Math.min(...ys) + padY * 2);
+    if (!vw || sw < 16 || sh < 16) throw new Error("item pile zone is too small");
+    const filter = enhanceFilter(video, sx, sy, sw, sh);
+    const base = cropTo(video, sx, sy, sw, sh, 1024, filter);
+    const left = cropTo(video, sx, sy, sw * 0.6, sh, 1024, filter);
+    const right = cropTo(video, sx + sw * 0.4, sy, sw * 0.6, sh, 1024, filter);
+    return {
+      base,
+      views: [
+        { label: "pile", blob: await toJpeg(base, 0.85) },
+        { label: "left", blob: await toJpeg(left, 0.85) },
+        { label: "right", blob: await toJpeg(right, 0.85) },
+      ],
+    };
+  } finally {
+    video.removeAttribute("src");
+  }
+}
+
+/** The pile close-up with a numbered box per confirmed item (#1, #2, …), for the main investigation call. */
+export async function numberedPile(base: HTMLCanvasElement, items: { box_2d: number[] }[]): Promise<Blob> {
+  const canvas = document.createElement("canvas");
+  canvas.width = base.width;
+  canvas.height = base.height;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(base, 0, 0);
+  const scale = canvas.width / 720;
+  ctx.lineWidth = Math.max(2, 3 * scale);
+  ctx.font = `800 ${Math.max(14, Math.round(18 * scale))}px system-ui, sans-serif`;
+  ctx.textBaseline = "top";
+  items.forEach((item, index) => {
+    if (item.box_2d.length !== 4) return;
+    const [ymin, xmin, ymax, xmax] = item.box_2d.map((n) => n / 1000);
+    const x = xmin * canvas.width;
+    const y = ymin * canvas.height;
+    ctx.strokeStyle = "#f472b6";
+    ctx.strokeRect(x, y, (xmax - xmin) * canvas.width, (ymax - ymin) * canvas.height);
+    const label = `#${index + 1}`;
+    const pad = 4 * scale;
+    const w = ctx.measureText(label).width + pad * 2;
+    ctx.fillStyle = "#f472b6";
+    ctx.fillRect(x, y, w, Math.max(14, 18 * scale) + pad * 2);
+    ctx.fillStyle = "#0b1220";
+    ctx.fillText(label, x + pad, y + pad);
+  });
+  return toJpeg(canvas, 0.85);
+}
+
+export function canvasToJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
+  return toJpeg(canvas, 0.85);
 }

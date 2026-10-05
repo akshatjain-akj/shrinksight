@@ -26,7 +26,10 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 line; an item counts as unscanned only if no line matches. Answers that contradict the receipt are re-asked once,
 then marked inconclusive instead of raising a false alarm. Each camera's scanner and bagging areas are marked once
 (or suggested by Gemini from a frame) and drawn onto the stills Gemini sees, so any camera angle works.
-Measured with the [evaluation harness](eval/README.md).
+Before the video is watched, a separate image-only call lists every item in the marked item pile (whole pile plus
+zoomed halves, brightened for dark items); the list is shown as editable chips, numbered on the close-up, and Gemini
+must account for every numbered item. Measured with the [evaluation harness](eval/README.md), including
+`--repeat` runs for stability.
 
 **How an investigation stays fast:** the server looks up the receipt (or zone policy) first, so Gemini watches the
 clip **once** (stills, zone close-ups and the video in a single call) with low thinking. A re-check only happens

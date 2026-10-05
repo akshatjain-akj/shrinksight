@@ -56,6 +56,11 @@ class Settings:
             if m.strip()
         )
     )
+    # The item-pile inventory runs on its own model so it doesn't use the main model's daily quota
+    inventory_model: str = field(default_factory=lambda: _env("GEMINI_INVENTORY_MODEL", "gemini-3.1-flash-lite"))
+    inventory_deadline_s: int = 20
+    # Fixed sampling seed: the same clip gives the same answer more often (0 = let Gemini choose)
+    gemini_seed: int = field(default_factory=lambda: _env_int("GEMINI_SEED", 7))
     # Gemini 3+ thinking level for investigations: MINIMAL, LOW, MEDIUM, HIGH, or DEFAULT
     thinking_level: str = field(default_factory=lambda: _env("GEMINI_THINKING_LEVEL", "LOW"))
 
@@ -66,6 +71,7 @@ class Settings:
     daily_zone_suggestions: int = field(default_factory=lambda: _env_int("DAILY_ZONE_SUGGESTIONS", 30))
     daily_layout_saves: int = field(default_factory=lambda: _env_int("DAILY_LAYOUT_SAVES", 200))
     daily_questions: int = field(default_factory=lambda: _env_int("DAILY_QUESTIONS", 60))
+    daily_inventories: int = field(default_factory=lambda: _env_int("DAILY_INVENTORIES", 120))
     max_frame_bytes: int = 2 * 1024 * 1024
 
     # "firestore" on Cloud Run; "memory" for local runs without Google credentials (data resets on restart)

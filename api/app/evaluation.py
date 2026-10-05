@@ -25,6 +25,7 @@ class ClipResult:
     error: str | None = None
     answered_by: str | None = None
     timings: dict[str, int] = field(default_factory=dict)
+    run: int = 1
 
     @property
     def scored(self) -> bool:
@@ -92,6 +93,23 @@ def by_group(results: list[ClipResult], attr: str) -> dict[str, dict]:
     return {name: summarise(items) for name, items in sorted(groups.items())}
 
 
+def stability(results: list[ClipResult]) -> dict[str, dict]:
+    """Per clip, across repeated runs: how often the verdict and the unscanned count were right."""
+    by_clip: dict[str, list[ClipResult]] = {}
+    for result in results:
+        by_clip.setdefault(result.file, []).append(result)
+    out = {}
+    for file, runs in by_clip.items():
+        scored = [r for r in runs if r.scored]
+        out[file] = {
+            "runs": len(runs),
+            "verdict_right": _ratio(sum(r.verdict_ok for r in scored), len(runs)),
+            "count_right": _ratio(sum(r.count_ok for r in scored), len(runs)),
+            "unscanned_answers": sorted({r.predicted_unscanned for r in scored if r.predicted_unscanned is not None}),
+        }
+    return out
+
+
 def _fmt(value) -> str:
     if value is None:
         return "–"
@@ -118,6 +136,13 @@ def to_markdown(results: list[ClipResult], title: str) -> str:
         )
     lines += ["", "## Totals", "", "| Metric | Value |", "|---|---|"]
     lines += [f"| {key.replace('_', ' ')} | {_fmt(value)} |" for key, value in summary.items()]
+    if any(r.run > 1 for r in results):
+        lines += ["", "## Stability across repeated runs", "",
+                  "| Clip | Runs | Verdict right | Count right | Unscanned answers seen |", "|---|---|---|---|---|"]
+        for file, s in stability(results).items():
+            answers = ", ".join(str(a) for a in s["unscanned_answers"]) or "–"
+            verdict, count = _fmt(s["verdict_right"]), _fmt(s["count_right"])
+            lines.append(f"| {file} | {s['runs']} | {verdict} | {count} | {answers} |")
     angles = by_group(results, "angle")
     if len(angles) > 1:
         lines += ["", "## By angle", "", "| Angle | Clips | Verdict accuracy | Exact count | False alarm rate |",

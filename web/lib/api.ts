@@ -2,6 +2,7 @@ import { appCheckToken } from "./firebase";
 import type {
   AskAnswer,
   CameraLayout,
+  InventoryItem,
   Incident,
   InvestigationEvent,
   ReceiptLine,
@@ -81,6 +82,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ question }),
     }),
+  /** One image-only Gemini call: lists every object in the item pile from up to three views. */
+  inventory: async (cameraId: string, views: { label: "pile" | "left" | "right"; blob: Blob }[]) => {
+    const token = await appCheckToken();
+    const form = new FormData();
+    for (const view of views) form.append("view", view.blob, `${view.label}.jpg`);
+    const res = await fetch(`${API_BASE}/api/inventory`, {
+      method: "POST",
+      body: form,
+      headers: {
+        "x-shrinksight-meta": base64url(JSON.stringify({ camera_id: cameraId })),
+        ...(token ? { "x-firebase-appcheck": token } : {}),
+      },
+    });
+    if (!res.ok) throw await errorFrom(res);
+    return res.json() as Promise<{ items: InventoryItem[]; model: string; cached: boolean }>;
+  },
   layouts: () => request<Record<string, CameraLayout>>("/api/layouts"),
   saveLayout: (cameraId: string, zones: ZoneHint[]) =>
     request<CameraLayout>(`/api/layouts/${encodeURIComponent(cameraId)}`, {
@@ -109,6 +126,9 @@ export interface InvestigateMeta {
   camera_id: string;
   /** Zones for this clip. Omit to use the camera's saved layout; [] sends none. */
   zones?: ZoneHint[];
+  clip_seconds?: number;
+  /** The confirmed item-pile list; Gemini tracks each # item. */
+  inventory?: InventoryItem[];
   transaction_id?: string;
   receipt?: ReceiptLine[];
   tier1_events?: {

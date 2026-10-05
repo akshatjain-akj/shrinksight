@@ -24,7 +24,7 @@ from app.config import Settings  # noqa: E402
 from app.evaluation import ClipResult, summarise, to_markdown  # noqa: E402
 from app.gemini import GeminiGateway, GeminiUnavailable  # noqa: E402
 from app.investigator import investigate  # noqa: E402
-from app.models import ReceiptLine, Transaction, ZoneHint  # noqa: E402
+from app.models import InventoryItem, ReceiptLine, Transaction, ZoneHint  # noqa: E402
 from app.repo import MemoryRepo  # noqa: E402
 
 MIME = {".mp4": "video/mp4", ".mov": "video/mov", ".webm": "video/webm", ".3gp": "video/3gpp"}
@@ -78,10 +78,12 @@ def run_clip(entry: dict, clips_dir: Path, repo: MemoryRepo, gateway, settings: 
             lines=[ReceiptLine(**line) for line in entry["receipt"]], source="live",
         )
     zones = [ZoneHint(**zone) for zone in entry.get("zones", [])]
+    # Optional fixed item list (as if confirmed in the browser): tests tracking separately from discovery.
+    confirmed = [InventoryItem(description=name) for name in entry.get("inventory", [])] or None
 
     started = time.monotonic()
     events = list(investigate(clip, mime, camera, transaction, repo, gateway, settings, zones=zones,
-                              clip_seconds=entry.get("seconds")))
+                              clip_seconds=entry.get("seconds"), inventory=confirmed))
     result.latency_ms = round((time.monotonic() - started) * 1000)
     final = events[-1] if events else {"type": "error", "message": "no events"}
     if final["type"] == "error":
@@ -106,6 +108,7 @@ def main() -> None:
     parser.add_argument("--tag", default="run", help="label for this run, e.g. v2 or top-angle")
     parser.add_argument("--only", nargs="*", default=None, help="run only these clip file names")
     parser.add_argument("--sleep", type=float, default=15, help="seconds between clips (rate limits)")
+    parser.add_argument("--repeat", type=int, default=1, help="run each clip N times to measure stability")
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text())
@@ -114,23 +117,27 @@ def main() -> None:
     base = Settings()
     settings = Settings(gemini_api_key=key, investigator_model=args.model or base.investigator_model)
     gateway = GeminiGateway(key, settings.gemini_timeout_ms, settings.gemini_max_retries)
-    repo = MemoryRepo()
-
     results: list[ClipResult] = []
-    for index, entry in enumerate(entries):
-        if needs_filling(entry):
-            print(f"skip {entry['file']}: replace {PLACEHOLDER} in the manifest first")
-            continue
-        if index and results:
+    runnable = [e for e in entries if not needs_filling(e)]
+    for e in entries:
+        if needs_filling(e):
+            print(f"skip {e['file']}: replace {PLACEHOLDER} in the manifest first")
+    jobs = [(run_no, entry) for run_no in range(1, max(1, args.repeat) + 1) for entry in runnable]
+    for index, (run_no, entry) in enumerate(jobs):
+        if index:
             time.sleep(args.sleep)
-        print(f"[{index + 1}/{len(entries)}] {entry['file']} ({entry.get('angle', '?')}) …", flush=True)
+        # A fresh in-memory store per run, so repeats really call Gemini instead of hitting the cache.
+        repo = MemoryRepo()
+        print(f"[{index + 1}/{len(jobs)}] run {run_no} · {entry['file']} ({entry.get('angle', '?')}) …", flush=True)
         try:
             result = run_clip(entry, args.clips, repo, gateway, settings)
+            result.run = run_no
         except GeminiUnavailable as exc:
             result = ClipResult(file=entry["file"], angle=entry.get("angle", "unknown"),
                                 lighting=entry.get("lighting", "normal"), model=settings.investigator_model,
                                 expected_verdict=entry["expected"]["verdict"],
-                                expected_unscanned=len(entry["expected"].get("unscanned", [])), error=str(exc)[:80])
+                                expected_unscanned=len(entry["expected"].get("unscanned", [])), error=str(exc)[:80],
+                                run=run_no)
         results.append(result)
         status = result.error or f"{result.predicted_verdict}, {result.predicted_unscanned} unscanned"
         print(f"    → {status}")

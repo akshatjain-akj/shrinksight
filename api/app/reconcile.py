@@ -11,16 +11,25 @@ Problems are split into:
   re-ask, then accepted.
 """
 
-from .models import ReceiptLine, VerdictOut
+from .models import InventoryItem, ReceiptLine, VerdictOut
 
 
-def reconcile(verdict: VerdictOut, receipt: list[ReceiptLine]) -> tuple[VerdictOut, list[str], list[str]]:
-    if not receipt:
+def reconcile(
+    verdict: VerdictOut, receipt: list[ReceiptLine], confirmed: list[InventoryItem] | None = None
+) -> tuple[VerdictOut, list[str], list[str]]:
+    confirmed = confirmed or []
+    if not receipt and not confirmed:
         return verdict, [], []
 
     out = verdict.model_copy(deep=True)
     hard: list[str] = []
     soft: list[str] = []
+    if confirmed:
+        out.inventory = list(confirmed)
+        soft += _account_for_confirmed(out, confirmed)
+    if not receipt:
+        return out, hard, soft
+
     used: set[int] = set()
 
     for item in out.seen_items:
@@ -57,7 +66,7 @@ def reconcile(verdict: VerdictOut, receipt: list[ReceiptLine]) -> tuple[VerdictO
                 f"Receipt line {number} '{line.name}' was not matched to any item you listed. It was scanned, so it "
                 "was handled: look for it specifically. It may be flat, thin, soft, edge-on, or lying on another item."
             )
-    counted = len(out.inventory) or len(out.starting_items)
+    counted = 0 if confirmed else (len(out.inventory) or len(out.starting_items))
     if counted and out.items_seen < counted:
         soft.append(
             f"You counted {counted} items in the item pile at the start but listed only "
@@ -71,6 +80,39 @@ def reconcile(verdict: VerdictOut, receipt: list[ReceiptLine]) -> tuple[VerdictO
             "or change the verdict."
         )
     return out, hard, soft
+
+
+def _account_for_confirmed(out: VerdictOut, confirmed: list[InventoryItem]) -> list[str]:
+    """Every item on the confirmed list must appear in seen_items (by inventory_id); name the ones that don't."""
+    problems: list[str] = []
+    seen_ids: set[int] = set()
+    for item in out.seen_items:
+        number = item.inventory_id
+        if number is not None and not 1 <= number <= len(confirmed):
+            item.inventory_id = None
+            continue
+        if number is not None and number in seen_ids:
+            problems.append(f"Item #{number} ({confirmed[number - 1].description}) was used for more than one item.")
+            item.inventory_id = None
+            continue
+        if number is not None:
+            seen_ids.add(number)
+    for number, listed in enumerate(confirmed, start=1):
+        if number not in seen_ids:
+            problems.append(
+                f"Item #{number} ({listed.description}) from the confirmed list isn't accounted for. Find where it "
+                "went (over the scanner, around it, into the bag, or still in the pile) and include it."
+            )
+    return problems
+
+
+def confirmed_list_text(confirmed: list[InventoryItem]) -> str:
+    lines = "\n".join(f"#{i} {item.description}" for i, item in enumerate(confirmed, start=1))
+    return (
+        "Confirmed item list (numbered boxes on the item-pile close-up). Track EVERY # item: list each one in "
+        "seen_items with its inventory_id. Extra items not on the list are allowed with inventory_id null.\n"
+        + lines
+    )
 
 
 def receipt_lines_text(receipt: list[ReceiptLine]) -> str:
