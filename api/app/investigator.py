@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from .config import Settings
 from .gemini import FALLBACK_CODES, Gateway, GeminiUnavailable, model_chain, seconds_left, thinking_config
 from .models import (
+    LEFT_BEHIND,
     POSITIVE_VERDICTS,
     Camera,
     Incident,
@@ -37,12 +38,12 @@ from .models import (
     ZoneHint,
     status_for,
 )
-from .reconcile import confirmed_list_text, receipt_lines_text, reconcile
+from .reconcile import apply_receipt_rule, confirmed_list_text, receipt_lines_text, reconcile
 from .repo import Repo, match_sku
 from .zones import zones_context
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-08.confirmed-list"
+PROMPT_VERSION = "2026-10-09.ended-in"
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
@@ -86,11 +87,17 @@ Method for a self-checkout (receipt first):
      pens, cables. A flat item lying on another item can look like a pattern printed on it; list it separately.
      Held edge-on, a flat item may look like a thin line.
    - Objects resting on, inside, or carried together with another object are separate items. List each one.
+   - Bundled items (taped, rubber-banded, or in one tray) are listed separately, unless the receipt sells them as
+     one line (e.g. "biscuits 3-pack"), in which case they are one item.
 2. Follow every item, in order, with its clip timestamp. Match each one to the till receipt line it corresponds
    to by what it looks like (each line matches at most one item). An item is unscanned ONLY if no receipt line
    matches it. The receipt is the truth about what was scanned.
-3. Note where each item went relative to the scanner zone; this is supporting evidence, not the deciding factor.
+3. For each item record where it FINISHED (ended_in): bag, hand_or_pocket (kept by the shopper), pile (never
+   moved), put_back, or unclear. Also note its path relative to the scanner zone (location); "never_near_scanner"
+   means the item moved to the bag or the shopper WITHOUT passing the scanner, not that it stayed still.
    The scanner may be a real scanner or a marked area (paper, tape, a box); use the marked zones when given.
+4. Never answer BENIGN if an item that is not on the receipt ended in the bag or with the shopper; that is
+   SCAN_AVOIDANCE. BENIGN means every item matched the receipt, or stayed in the pile, or was put back.
 
 Method for the shop floor: watch where picked-up items go, using the zone policy provided.
 - A person lying flat on the floor is a health hazard, not a theft. Use RULE_BREACH and say they are down.
@@ -108,7 +115,8 @@ confirmed item list is given, you may leave inventory empty: set inventory_id on
 Leave starting_items empty.
 seen_items: every item you saw handled. For each: receipt_line = the number of the receipt line it matches (each
 line used at most once), or null if no line matches; scanned = true exactly when receipt_line is set; location =
-where it went relative to the scanner zone. items_seen and items_scanned must match seen_items.
+its path relative to the scanner zone; ended_in = where it finished (bag, hand_or_pocket, pile, put_back, unclear).
+items_seen and items_scanned must match seen_items.
 reason: one or two plain sentences, actions only."""
 
 
@@ -468,8 +476,15 @@ def investigate(
         else:
             verdict = chosen
 
-        # ---- 5. Price, save, cache ----
+        # ---- 5. Receipt-check safety rule: Gemini can clear an alert only when the receipt agrees ----
+        receipt_note, overridden = None, False
+        if camera.kind == "checkout" and receipt:
+            verdict, receipt_note, overridden = apply_receipt_rule(verdict, receipt)
+
+        # ---- 6. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
+        incident.receipt_check = receipt_note
+        incident.overridden = overridden
         incident.zones_used = zones
         timings["total_ms"] = _ms(started)
         incident.timings = timings
@@ -508,8 +523,8 @@ def _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbo
     unscanned: list[UnscannedItem] = []
     if verdict.verdict in POSITIVE_VERDICTS:
         for item in verdict.seen_items:
-            if item.scanned:
-                continue
+            if item.scanned or item.ended_in in LEFT_BEHIND:
+                continue  # paid for, or never left the pile: not a loss
             sku = match_sku(item.description, toolbox._catalogue())
             unscanned.append(UnscannedItem(t=item.t, description=item.description,
                                            price_inr=sku.price_inr if sku else None,

@@ -55,6 +55,8 @@ export interface SeenItem {
   location?: ItemLocation;
   /** # in the confirmed item list, or null for an extra item. */
   inventory_id?: number | null;
+  /** Where the item finished up. */
+  ended_in?: "bag" | "hand_or_pocket" | "pile" | "put_back" | "unclear";
 }
 
 export interface TimelineEvent {
@@ -124,6 +126,9 @@ export interface Incident {
   zones_used?: ZoneHint[];
   /** Where the investigation's time went, in ms (lookup, upload, watch, recheck, total). */
   timings?: Record<string, number>;
+  /** The server's receipt check: why it was rejected, or why Gemini's verdict was overridden. */
+  receipt_check?: string | null;
+  overridden?: boolean;
 }
 
 export interface InventoryItem {
