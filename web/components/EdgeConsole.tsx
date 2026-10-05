@@ -12,6 +12,7 @@ import { personBox, type Pt, type ZoneShape } from "@/lib/tier1/geometry.ts";
 import { PersonTracker } from "@/lib/tier1/tracks.ts";
 import { Tier1Engine } from "@/lib/tier1/engine.ts";
 import { privacyBoxes } from "@/lib/tier1/privacy.ts";
+import { PoseSmoother } from "@/lib/tier1/oneEuro.ts";
 import { pickFour, type TimedStill } from "@/lib/tier1/stills.ts";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision.ts";
 import type { Camera } from "@/lib/types";
@@ -274,6 +275,7 @@ export default function EdgeConsole() {
     const fpsMarks: number[] = [];
     let lastPoses: { x: number; y: number; visibility?: number }[][] = [];
     let rawPoses: { x: number; y: number; visibility?: number }[][] = [];
+    const smoother = new PoseSmoother();
     let lastFaces: { originX: number; originY: number; width: number; height: number }[] = [];
     stopRef.current = false;
     startedRef.current = performance.now();
@@ -310,7 +312,8 @@ export default function EdgeConsole() {
         if (frame % (slow ? 4 : 2) === 0) {
           const found = modelsRef.current.pose.detectForVideo(video, now).landmarks ?? [];
           rawPoses = found;
-          lastPoses = found.filter((pose) => posePeople([pose], 0).length > 0);
+          // Smoothed landmarks (One Euro) for the rule engine; privacy blur keeps using the raw, unlagged ones.
+          lastPoses = smoother.smooth(found, now).filter((pose) => posePeople([pose], 0).length > 0);
         }
         if (frame % 3 === 0) {
           lastFaces = (modelsRef.current.face.detectForVideo(video, now).detections ?? [])

@@ -398,6 +398,17 @@ class InvestigateMeta(BaseModel):
     clip_seconds: float | None = Field(default=None, ge=0, le=600)
     # The item list confirmed in the browser (from the inventory call, possibly edited). Tracked one by one.
     inventory: list[InventoryItem] | None = Field(default=None, max_length=30)
+    # When the browser cropped the video to the action area: [ymin, xmin, ymax, xmax] of the full view, 0-1000.
+    video_crop: list[int] | None = Field(default=None, min_length=4, max_length=4)
+
+    @field_validator("video_crop")
+    @classmethod
+    def crop_range(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if not all(0 <= n <= 1000 for n in value) or value[2] - value[0] < 50 or value[3] - value[1] < 50:
+            raise ValueError("video_crop must be [ymin, xmin, ymax, xmax] within 0..1000 and at least 50 wide")
+        return value
     # Zones marked for this clip. None = use the camera's saved layout; [] = send no zones.
     zones: list[ZoneHint] | None = Field(default=None, max_length=8)
 
@@ -530,6 +541,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             zones=zones,
             clip_seconds=meta.clip_seconds,
             inventory=meta.inventory,
+            video_crop=meta.video_crop,
         ):
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 

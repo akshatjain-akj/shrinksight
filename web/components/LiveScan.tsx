@@ -6,6 +6,7 @@ import { personBox, type Pt } from "@/lib/tier1/geometry";
 import { Tier1Engine } from "@/lib/tier1/engine";
 import { PersonTracker } from "@/lib/tier1/tracks";
 import { privacyBoxes } from "@/lib/tier1/privacy";
+import { PoseSmoother } from "@/lib/tier1/oneEuro";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision";
 import type { Camera, Rule, Zone } from "@/lib/types";
 
@@ -160,6 +161,7 @@ export default function LiveScan({
     let lastVideoTime = -1;
     let lastPoses: Landmark[][] = [];
     let rawPoses: Landmark[][] = [];
+    const smoother = new PoseSmoother();
     let lastDetail = "";
     let lastProcessed = 0;
     let onScreen = true;
@@ -206,7 +208,8 @@ export default function LiveScan({
         if (frame % 2 === 0 || !facesReady) {
           const found = models.pose.detectForVideo(video, nextStamp()).landmarks ?? [];
           rawPoses = found;
-          lastPoses = found.filter((pose) => posePeople([pose], 0).length > 0);
+          // Smoothed landmarks (One Euro) for the rule engine; privacy blur keeps using the raw, unlagged ones.
+          lastPoses = smoother.smooth(found, performance.now()).filter((pose) => posePeople([pose], 0).length > 0);
         }
         if (frame % 3 === 1 || !facesReady) {
           faces = (models.face.detectForVideo(video, nextStamp()).detections ?? []).flatMap((d) =>

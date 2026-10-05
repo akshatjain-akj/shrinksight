@@ -15,7 +15,7 @@ import { inr } from "@/lib/format";
 import { canvasToJpeg, firstFrame, markedStills, numberedPile, pileViews, type Frame, type PileViews } from "@/lib/frames";
 import { shrinkClip } from "@/lib/transcode";
 import { useStore } from "@/lib/hooks";
-import { shapesToHints } from "@/lib/tier1/zones";
+import { actionCrop, rectToBox, shapesToHints } from "@/lib/tier1/zones";
 import type { Incident, ReceiptLine, Transaction } from "@/lib/types";
 
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -176,13 +176,20 @@ export default function InvestigatePage() {
 
     // 2. Stills (from the full-resolution original) and the upload-size optimisation run side by side.
     setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
-    const [baseStills, upload] = await Promise.all([
+    // Crop the uploaded video to the marked zones (+30% margin) and draw the zone outlines into it.
+    const crop = actionCrop(zonesToSend);
+    const [baseStills, shrunk] = await Promise.all([
       // Some codecs can't be seeked in the browser; the clip alone still works.
       clipUrl
         ? markedStills(clipUrl, zonesToSend, { skipPickup: Boolean(pile) }).catch((): MarkedStill[] => [])
         : Promise.resolve<MarkedStill[]>([]),
-      shrinkClip(clip, (f) => relabel(`Optimising the clip for upload · ${Math.round(f * 100)}%`)),
+      shrinkClip(clip, (f) => relabel(`${crop ? "Focusing the clip on the counter" : "Optimising the clip for upload"} · ${Math.round(f * 100)}%`), {
+        crop,
+        zones: zonesToSend,
+      }),
     ]);
+    const upload = shrunk.blob;
+    if (shrunk.crop) meta.video_crop = rectToBox(shrunk.crop);
     const stills = [...baseStills];
 
     // 3. Use the confirmed list: numbered boxes on the pile close-up, and the list itself for Gemini to track.

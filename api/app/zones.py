@@ -28,19 +28,42 @@ description: a few words on what marks the area visually, e.g. "white paper squa
 Describe objects and places only, never people."""
 
 
-def zones_context(hints: list[ZoneHint], zones: list[Zone]) -> str:
+def to_crop(box: list[int], crop: list[int] | None) -> list[int]:
+    """A full-view box (0-1000) expressed in the coordinates of a cropped video (0-1000)."""
+    if not crop:
+        return box
+    cy, cx, ch, cw = crop[0], crop[1], max(1, crop[2] - crop[0]), max(1, crop[3] - crop[1])
+    ys = [max(0, min(1000, round((v - cy) * 1000 / ch))) for v in (box[0], box[2])]
+    xs = [max(0, min(1000, round((v - cx) * 1000 / cw))) for v in (box[1], box[3])]
+    return [ys[0], xs[0], ys[1], xs[1]]
+
+
+def from_crop(box: list[int], crop: list[int] | None) -> list[int]:
+    """A box Gemini gave in cropped-video coordinates, mapped back to the full camera view (0-1000)."""
+    if not crop or len(box) != 4:
+        return box
+    cy, cx, ch, cw = crop[0], crop[1], crop[2] - crop[0], crop[3] - crop[1]
+    return [round(cy + box[0] * ch / 1000), round(cx + box[1] * cw / 1000),
+            round(cy + box[2] * ch / 1000), round(cx + box[3] * cw / 1000)]
+
+
+def zones_context(hints: list[ZoneHint], zones: list[Zone], crop: list[int] | None = None) -> str:
     """Text block telling Gemini exactly where each marked zone is in the picture."""
     if not hints:
         return ""
     names = {z.id: z.name for z in zones}
     lines = []
     for hint in hints:
-        box = ", ".join(str(n) for n in hint.box_2d())
+        box = ", ".join(str(n) for n in to_crop(hint.box_2d(), crop))
         described = f" · looks like: {hint.description}" if hint.description else ""
         lines.append(f"- {hint.zone_id} {names.get(hint.zone_id, hint.zone_id)} ({hint.kind}): [{box}]{described}")
+    where = (
+        "in VIDEO coordinates: the video is cropped to the area around these zones (the stills show the full "
+        "camera view)" if crop else "on a 0-1000 grid"
+    )
     return (
-        "Marked zones ([ymin, xmin, ymax, xmax] on a 0-1000 grid; the same zones are outlined on any attached "
-        "stills: ITEMS in pink, SCANNER in amber, BAGGING in blue):\n" + "\n".join(lines)
+        f"Marked zones ([ymin, xmin, ymax, xmax] {where}; the same zones are outlined in the video and on any "
+        "attached stills: ITEMS in pink, SCANNER in amber, BAGGING in blue):\n" + "\n".join(lines)
     )
 
 
