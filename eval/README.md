@@ -14,6 +14,7 @@ Edit `manifest.json`. One entry per video file:
 | `receipt` | What the till actually scanned. Prices can be `0` |
 | `expected.verdict` | `BENIGN` if everything was paid for, `SCAN_AVOIDANCE` / `CONCEALMENT` otherwise |
 | `expected.unscanned` | Items handled but **not** on the receipt |
+| `seconds` (optional) | Clip length; clips over 10 s are sampled at 3 fps, as on the website |
 | `zones` (optional) | Where the scanner/bagging areas are in this clip. On the Investigate page, mark them and click **Copy zones for eval**, then paste here |
 
 Entries containing `FILL_ME` are skipped until you fill them in.

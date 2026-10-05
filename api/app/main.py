@@ -110,12 +110,13 @@ def healthz() -> dict:
 @app.get("/api/selftest")
 async def run_selftest() -> dict:
     """Checks every cloud dependency in parallel and reports each one separately."""
-    firestore_res, storage_res, gemini_res = await asyncio.gather(
+    firestore_res, storage_res, gemini_res, models_res = await asyncio.gather(
         asyncio.to_thread(selftest.check_firestore, settings),
         asyncio.to_thread(selftest.check_storage, settings),
         asyncio.to_thread(selftest.check_gemini, settings),
+        asyncio.to_thread(selftest.check_models, settings),
     )
-    checks = {"firestore": firestore_res, "storage": storage_res, "gemini": gemini_res}
+    checks = {"firestore": firestore_res, "storage": storage_res, "gemini": gemini_res, "models": models_res}
     return {"ok": all(c["ok"] for c in checks.values()), "version": settings.version, "checks": checks}
 
 
@@ -358,6 +359,7 @@ class InvestigateMeta(BaseModel):
     transaction_id: str | None = Field(default=None, max_length=40)
     receipt: list[ReceiptLine] | None = Field(default=None, max_length=30)
     tier1_events: list[Tier1EventIn] = Field(default_factory=list, max_length=12)
+    clip_seconds: float | None = Field(default=None, ge=0, le=600)
     # Zones marked for this clip. None = use the camera's saved layout; [] = send no zones.
     zones: list[ZoneHint] | None = Field(default=None, max_length=8)
 
@@ -383,7 +385,7 @@ def _parse_meta(header: str | None) -> InvestigateMeta:
 # Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked).
 STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end")
 MAX_STILLS = len(STILL_LABELS)
-STILL_LIMIT = 200_000
+STILL_LIMIT = 400_000  # the high-detail item-pile close-up can be up to ~1024 px wide
 
 
 async def _read_marked(request: Request, limit: int) -> tuple[bytes, str, list[tuple[str, bytes]]]:
@@ -488,6 +490,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             tier1_events=[e.model_dump() for e in meta.tier1_events],
             stills=stills,
             zones=zones,
+            clip_seconds=meta.clip_seconds,
         ):
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 

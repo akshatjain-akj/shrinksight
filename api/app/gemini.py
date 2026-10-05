@@ -18,9 +18,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-RETRYABLE_CODES = {408, 429, 500, 502, 503, 504}
-# Errors where another model is worth trying: overloaded, rate limited, server trouble, or not available here.
-FALLBACK_CODES = {404, 429, 500, 502, 503, 504}
+RETRYABLE_CODES = {429, 500, 502, 503, 504}
+# Errors where another model is worth trying: too slow, overloaded, rate limited, server trouble, or not available.
+FALLBACK_CODES = {404, 408, 429, 500, 502, 503, 504}
 MIN_CALL_SECONDS = 3
 
 
@@ -65,6 +65,7 @@ class Gateway(Protocol):
     ) -> GenResult: ...
     def upload_video(self, data: bytes, mime: str, timeout_s: float = 60) -> UploadedFile: ...
     def delete_file(self, name: str) -> None: ...
+    def check_model(self, model: str) -> tuple[bool, str]: ...
 
 
 def seconds_left(deadline: float | None) -> float:
@@ -120,13 +121,18 @@ class GeminiGateway:
                 if code not in RETRYABLE_CODES or attempt >= retries:
                     raise GeminiUnavailable(_friendly(code, str(exc)), code) from exc
                 wait = _retry_after(exc) or (min(4.0, 1.5 * 2**attempt) + random.uniform(0, 0.6))
-            except Exception as exc:  # network errors / timeouts from the HTTP layer
-                if attempt >= retries:
-                    raise GeminiUnavailable(f"Gemini request failed: {type(exc).__name__}", 408) from exc
+                # Only wait if a retry can still finish inside the budget; otherwise let the caller fall back.
+                if wait > seconds_left(deadline) - 8:
+                    raise GeminiUnavailable(_friendly(code, str(exc)), code) from exc
+            except Exception as exc:
+                if _is_timeout(exc):
+                    # Don't retry a slow model: hand back so the caller can try a backup in the time left.
+                    raise GeminiUnavailable(
+                        f"Gemini took too long to answer (over {call_ms / 1000:.0f} s).", 408
+                    ) from exc
+                if attempt >= retries or seconds_left(deadline) < 10:
+                    raise GeminiUnavailable(f"Couldn't reach Gemini ({type(exc).__name__}).", 502) from exc
                 wait = 1.0 + random.uniform(0, 0.5)
-            # Only wait if a retry can still finish inside the budget; otherwise let the caller fall back.
-            if wait > seconds_left(deadline) - 8:
-                raise GeminiUnavailable("Gemini is busy right now.", 503)
             attempt += 1
             time.sleep(wait)
 
@@ -154,6 +160,15 @@ class GeminiGateway:
             self._client.files.delete(name=name)
         except Exception:
             pass  # files expire on their own after 48 h; deletion is best effort
+
+    def check_model(self, model: str) -> tuple[bool, str]:
+        """Whether this key can use the model. A metadata lookup only; it uses no generation quota."""
+        try:
+            found = self._client.models.get(model=model)
+            return True, getattr(found, "display_name", None) or model
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            return False, "not available on this key" if code in (403, 404) else f"check failed ({type(exc).__name__})"
 
 
 def call_with_fallback(
@@ -185,6 +200,11 @@ def model_chain(primary: str, fallbacks: tuple[str, ...]) -> list[str]:
         if model and model not in chain:
             chain.append(model)
     return chain
+
+
+def _is_timeout(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    return "timeout" in name or isinstance(exc, TimeoutError)
 
 
 def _retry_after(exc: Exception) -> float | None:
@@ -219,7 +239,7 @@ def _friendly(code: int | None, raw: str) -> str:
     if code == 429:
         return "Gemini free-tier quota reached; please try again in a minute."
     if code == 503:
-        return "Gemini is overloaded right now; please try again in a moment."
+        return "Gemini is overloaded right now (model busy); please try again in a moment."
     if code == 404:
         return "Configured Gemini model was not found; check GEMINI_MODEL / GEMINI_INVESTIGATOR_MODEL."
     if code in (400, 413):

@@ -155,7 +155,9 @@ def test_all_models_busy_is_a_clear_error(repo, settings):
 
     events = run(repo, gateway, replace(settings, fallback_models=("backup-model",)))
 
-    assert events[-1] == {"type": "error", "message": "overloaded"}
+    error = events[-1]
+    assert error["type"] == "error" and error["message"].startswith("overloaded (while watching the clip")
+    assert error["stage"] == "watching the clip" and error["code"] == 503
 
 
 def test_non_retryable_error_does_not_fall_back(repo, settings):
@@ -232,14 +234,16 @@ def test_stills_and_close_ups_are_sent_ahead_of_the_clip(repo, settings):
 
 
 def test_starting_inventory_larger_than_items_listed_triggers_one_recheck(repo, settings):
-    short = verdict_json(starting_items=["milk", "bread", "wine", "chips", "flower"])
-    gateway = FakeGateway([text(short), text(verdict_json(starting_items=["milk", "bread", "wine", "chips"]))])
+    pile = [{"description": d} for d in ("milk", "bread", "wine", "chips", "flat cloth flower")]
+    short = verdict_json(inventory=pile)
+    gateway = FakeGateway([text(short), text(verdict_json(inventory=pile[:4]))])
 
     events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
 
     assert len(gateway.calls) == 2
     assert "5 items in the item pile" in gateway.calls[1][1][-1].parts[0].text
-    assert events[-1]["incident"]["verdict"]["starting_items"] == ["milk", "bread", "wine", "chips"]
+    inventory = events[-1]["incident"]["verdict"]["inventory"]
+    assert [i["description"] for i in inventory] == ["milk", "bread", "wine", "chips"]
 
 
 def test_large_clip_goes_through_files_api_and_is_deleted(repo, settings):
@@ -268,3 +272,55 @@ def test_normalise_mime():
     assert normalise_mime("video/webm;codecs=vp9") == "video/webm"
     assert normalise_mime("video/quicktime") == "video/mov"
     assert normalise_mime("image/png") is None
+
+
+def test_unmatched_receipt_line_is_named_in_the_recheck(repo, settings):
+    missing_chips = verdict_json(items_seen=3, items_scanned=2, seen_items=json.loads(verdict_json())["seen_items"][:3])
+    gateway = FakeGateway([text(missing_chips), text(verdict_json())])
+
+    run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    recheck = gateway.calls[1][1][-1].parts[0].text
+    assert "Receipt line 3 'Potato chips 150g packet' was not matched" in recheck
+    assert "flat, thin, soft" in recheck
+
+
+def test_close_ups_get_high_detail_and_video_low(repo, settings):
+    gateway = FakeGateway([text(verdict_json())])
+    jpeg = b"\xff\xd8\xff\xd9"
+
+    run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"),
+        stills=[("before", jpeg), ("pickup_start", jpeg)])
+
+    parts = gateway.calls[0][1][0].parts
+    images = [p for p in parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
+    video = next(p for p in parts if p.inline_data and p.inline_data.mime_type == "video/webm")
+    assert [p.media_resolution.level.name for p in images] == ["MEDIA_RESOLUTION_MEDIUM", "MEDIA_RESOLUTION_HIGH"]
+    assert video.media_resolution.level.name == "MEDIA_RESOLUTION_LOW"
+    assert gateway.calls[0][2].media_resolution is None, "no request-wide resolution that would shrink the close-ups"
+
+
+def test_long_clips_are_sampled_at_3_fps(repo, settings):
+    for seconds, fps in ((8, 5), (13, 3)):
+        gateway = FakeGateway([text(verdict_json())])
+        run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"), clip_seconds=seconds)
+        video = next(p for p in gateway.calls[0][1][0].parts if p.video_metadata)
+        assert video.video_metadata.fps == fps
+
+
+def test_slow_model_hands_over_to_the_backup(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("Gemini took too long to answer (over 35 s).", 408), text(verdict_json())])
+
+    events = run(repo, gateway, replace(settings, fallback_models=("backup-model",)),
+                 transaction=repo.get_transaction("TXN-L2-2041"))
+
+    fallback = next(e for e in events if e.get("step") == "fallback")
+    assert "test-model is slow" in fallback["label"]
+    assert events[-1]["incident"]["model"] == "backup-model"
+
+
+def test_flat_and_stacked_item_rules_are_in_the_prompt():
+    from app.investigator import SYSTEM_PROMPT
+
+    assert "cloth or paper flowers" in SYSTEM_PROMPT
+    assert "resting on, inside, or carried together" in SYSTEM_PROMPT

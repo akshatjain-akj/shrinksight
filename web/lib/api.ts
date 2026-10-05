@@ -130,54 +130,80 @@ function base64url(text: string): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** Uploads a clip and calls onEvent for each Server-Sent Event until the stream ends. */
+function errorFromText(status: number, text: string): ApiError {
+  let message = status ? `Request failed (HTTP ${status})` : "Network error while sending the clip.";
+  try {
+    const body = JSON.parse(text);
+    if (typeof body.detail === "string") message = body.detail;
+    else if (Array.isArray(body.detail)) message = body.detail.map((d: { msg?: string }) => d.msg).join("; ");
+  } catch {
+    if (status === 413) message = "The clip is too large to upload.";
+  }
+  return new ApiError(status, message);
+}
+
+/**
+ * Uploads a clip and calls onEvent for each Server-Sent Event until the stream ends.
+ * Uses XMLHttpRequest so the upload can report progress (fetch can't) while the response still streams.
+ */
 export async function investigateStream(
   clip: Blob,
   meta: InvestigateMeta,
   onEvent: (event: InvestigationEvent) => void,
   signal?: AbortSignal,
   stills: MarkedStill[] = [],
+  onUpload?: (fraction: number) => void,
 ): Promise<void> {
   const token = await appCheckToken();
-  const headers: Record<string, string> = {
-    "x-shrinksight-meta": base64url(JSON.stringify(meta)),
-    ...(token ? { "x-firebase-appcheck": token } : {}),
-  };
-  let body: BodyInit = clip;
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `${STREAM_BASE}/api/investigate`);
+  xhr.setRequestHeader("x-shrinksight-meta", base64url(JSON.stringify(meta)));
+  if (token) xhr.setRequestHeader("x-firebase-appcheck", token);
+  let body: XMLHttpRequestBodyInit = clip;
   if (stills.length) {
     const form = new FormData();
     form.append("clip", clip, "clip.webm");
     for (const still of stills) form.append("still", still.blob, `${still.label}.jpg`);
-    body = form;
+    body = form; // the browser sets the multipart boundary
   } else {
-    headers["content-type"] = clip.type || "video/mp4";
+    xhr.setRequestHeader("content-type", clip.type || "video/mp4");
   }
-  const res = await fetch(`${STREAM_BASE}/api/investigate`, {
-    method: "POST",
-    body,
-    signal,
-    headers,
-  });
-  if (!res.ok) throw await errorFrom(res);
-  if (!res.body) throw new ApiError(0, "Streaming isn't supported by this browser.");
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let boundary: number;
-    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const data = frame
-        .split("\n")
-        .filter((line) => line.startsWith("data: "))
-        .map((line) => line.slice(6))
-        .join("\n");
-      if (data) onEvent(JSON.parse(data) as InvestigationEvent);
-    }
-  }
+  return new Promise<void>((resolve, reject) => {
+    let seen = 0;
+    let buffer = "";
+    const pump = () => {
+      buffer += xhr.responseText.slice(seen);
+      seen = xhr.responseText.length;
+      let boundary: number;
+      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = frame
+          .split("\n")
+          .filter((line) => line.startsWith("data: "))
+          .map((line) => line.slice(6))
+          .join("\n");
+        if (data) onEvent(JSON.parse(data) as InvestigationEvent);
+      }
+    };
+    xhr.upload.onprogress = (e) => e.lengthComputable && onUpload?.(e.loaded / e.total);
+    xhr.upload.onload = () => onUpload?.(1);
+    xhr.onprogress = () => xhr.status === 200 && pump();
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        pump();
+        resolve();
+      } else {
+        reject(errorFromText(xhr.status, xhr.responseText));
+      }
+    };
+    xhr.onerror = () =>
+      reject(new ApiError(0, "The connection dropped while sending the clip. Check your network and try again."));
+    signal?.addEventListener("abort", () => {
+      xhr.abort();
+      reject(new DOMException("Aborted", "AbortError"));
+    });
+    xhr.send(body);
+  });
 }

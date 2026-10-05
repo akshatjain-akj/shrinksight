@@ -49,7 +49,7 @@ export default function SetupPage() {
   }, []);
 
   async function runSelftest() {
-    setChecks({ firestore: pending, storage: pending, gemini: pending });
+    setChecks({ firestore: pending, storage: pending, gemini: pending, models: pending });
     try {
       const res = await fetch(`${API_BASE}/api/selftest`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -59,7 +59,7 @@ export default function SetupPage() {
       );
     } catch (e) {
       const failed: Status = { state: "done", check: { ok: false, detail: (e as Error).message } };
-      setChecks({ firestore: failed, storage: failed, gemini: failed });
+      setChecks({ firestore: failed, storage: failed, gemini: failed, models: failed });
     }
   }
 
@@ -82,6 +82,7 @@ export default function SetupPage() {
             {checks && <Row name="Firestore" status={checks.firestore} />}
             {checks && <Row name="Cloud Storage" status={checks.storage} />}
             {checks && <Row name="Gemini" status={checks.gemini} />}
+            {checks?.models && <Row name="Gemini models (main + backups)" status={checks.models} />}
           </tbody>
         </table>
       </section>

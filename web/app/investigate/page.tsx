@@ -12,6 +12,7 @@ import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "
 import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { inr } from "@/lib/format";
 import { firstFrame, markedStills, type Frame } from "@/lib/frames";
+import { shrinkClip } from "@/lib/transcode";
 import { useStore } from "@/lib/hooks";
 import { shapesToHints } from "@/lib/tier1/zones";
 import type { Incident, ReceiptLine, Transaction } from "@/lib/types";
@@ -114,6 +115,7 @@ export default function InvestigatePage() {
     const meta: InvestigateMeta = {
       camera_id: camera.id,
       zones: shapesToHints(zonesToSend, zoneState?.descriptions ?? {}),
+      ...(frame?.duration ? { clip_seconds: Math.round(frame.duration * 10) / 10 } : {}),
     };
     if (isCheckout) {
       if (receiptChoice === CUSTOM) meta.receipt = customLines.map((l) => ({ name: l.name.trim(), price_inr: l.price_inr }));
@@ -125,17 +127,23 @@ export default function InvestigatePage() {
     setRunning(true);
     setError(null);
     setResult(null);
+    const relabel = (label: string) => setSteps((prev) => [...prev.slice(0, -1), { label, done: false }]);
+    const advance = (label: string) =>
+      setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label, done: false }]);
+    const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+
+    // Stills (from the full-resolution original) and the upload-size optimisation run side by side.
     setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
-    let stills: MarkedStill[] = [];
-    try {
-      if (clipUrl) stills = await markedStills(clipUrl, zonesToSend);
-    } catch {
-      stills = []; // some codecs can't be seeked in the browser; the clip alone still works
-    }
-    setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label: "Uploading the clip", done: false }]);
+    const [stills, upload] = await Promise.all([
+      // Some codecs can't be seeked in the browser; the clip alone still works.
+      clipUrl ? markedStills(clipUrl, zonesToSend).catch((): MarkedStill[] => []) : Promise.resolve<MarkedStill[]>([]),
+      shrinkClip(clip, (f) => relabel(`Optimising the clip for upload · ${Math.round(f * 100)}%`)),
+    ]);
+    const sizeNote = upload.size < clip.size ? `${mb(upload.size)} MB, was ${mb(clip.size)} MB` : `${mb(upload.size)} MB`;
+    advance(`Uploading the clip (${sizeNote}) · 0%`);
     try {
       await investigateStream(
-        clip,
+        upload,
         meta,
         (event) => {
           if (event.type === "progress") {
@@ -149,6 +157,7 @@ export default function InvestigatePage() {
         },
         controller.signal,
         stills,
+        (f) => f < 1 && relabel(`Uploading the clip (${sizeNote}) · ${Math.round(f * 100)}%`),
       );
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);

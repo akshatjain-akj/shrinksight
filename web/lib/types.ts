@@ -65,6 +65,9 @@ export interface Verdict {
   confidence: number;
   items_seen: number;
   items_scanned: number;
+  /** Every separate item in the item pile at the start, each located with a box. */
+  inventory?: { description: string; box_2d: number[] }[];
+  /** Older incidents: plain names. */
   starting_items?: string[];
   seen_items: SeenItem[];
   timeline: TimelineEvent[];

@@ -76,10 +76,12 @@ export default function ZoneMarker({
         marked: [...new Set([...state.marked, ...out.found])],
       });
       const names = (ids: string[]) => ids.map((id) => state.shapes.find((s) => s.id === id)?.name ?? id).join(", ");
+      const pileMissing = state.shapes.some((s) => s.kind === "pickup" && out.missing.includes(s.id));
       setMessage(
-        out.found.length
+        (out.found.length
           ? `Gemini placed: ${names(out.found)}.${out.missing.length ? ` Not found: ${names(out.missing)}. Drag those yourself.` : ""} Check and adjust.`
-          : "Gemini couldn’t find the zones in this frame. Drag the corners yourself.",
+          : "Gemini couldn’t find the zones in this frame. Drag the corners yourself.") +
+          (pileMissing ? " Please mark the item pile: its close-up is how Gemini counts every item, even flat ones." : ""),
       );
     } catch (e) {
       setError((e as Error).message);
