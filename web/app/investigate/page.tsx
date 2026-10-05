@@ -7,9 +7,9 @@ import IncidentDetail from "@/components/IncidentDetail";
 import ProgressSteps, { type Step } from "@/components/ProgressSteps";
 import ReceiptEditor, { emptyLine } from "@/components/ReceiptEditor";
 import { ErrorNotice, Skeletons } from "@/components/ui";
-import ZoneMarker, { type ZoneState } from "@/components/ZoneMarker";
+import ZoneMarker, { markedShapes, type ZoneState } from "@/components/ZoneMarker";
 import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
-import { hasSavedLayout, polygonsForCamera, savedDescriptions, syncLayoutsFromServer } from "@/lib/cameraConfig";
+import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { inr } from "@/lib/format";
 import { firstFrame, markedStills, type Frame } from "@/lib/frames";
 import { useStore } from "@/lib/hooks";
@@ -50,12 +50,13 @@ export default function InvestigatePage() {
     void syncLayoutsFromServer().then(() => {
       if (cancelled) return;
       const zones = store.zones.filter((z) => camera.zone_ids.includes(z.id));
-      const saved = hasSavedLayout(camera.id);
+      const marked = savedZoneIds(camera.id).filter((id) => camera.zone_ids.includes(id));
       setZoneState({
         shapes: polygonsForCamera(camera.id, zones),
         descriptions: savedDescriptions(camera.id),
-        send: saved,
-        saved,
+        marked,
+        send: marked.length > 0,
+        saved: marked.length > 0,
       });
     });
     return () => {
@@ -108,10 +109,11 @@ export default function InvestigatePage() {
 
   const run = async () => {
     if (!camera || !clip) return;
-    const sendZones = Boolean(zoneState?.send);
+    const zonesToSend = zoneState?.send ? markedShapes(zoneState) : [];
+    const sendZones = zonesToSend.length > 0;
     const meta: InvestigateMeta = {
       camera_id: camera.id,
-      zones: sendZones && zoneState ? shapesToHints(zoneState.shapes, zoneState.descriptions) : [],
+      zones: shapesToHints(zonesToSend, zoneState?.descriptions ?? {}),
     };
     if (isCheckout) {
       if (receiptChoice === CUSTOM) meta.receipt = customLines.map((l) => ({ name: l.name.trim(), price_inr: l.price_inr }));
@@ -126,7 +128,7 @@ export default function InvestigatePage() {
     setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
     let stills: MarkedStill[] = [];
     try {
-      if (clipUrl) stills = await markedStills(clipUrl, sendZones && zoneState ? zoneState.shapes : []);
+      if (clipUrl) stills = await markedStills(clipUrl, zonesToSend);
     } catch {
       stills = []; // some codecs can't be seeked in the browser; the clip alone still works
     }
@@ -255,7 +257,9 @@ export default function InvestigatePage() {
 
             {clip && camera && zoneState && (
               <section className="card stack" aria-labelledby="step-zones">
-                <h2 id="step-zones">3 · {isCheckout ? "Where are the scanner and bagging area?" : "Where are the zones?"}</h2>
+                <h2 id="step-zones">
+                  3 · {isCheckout ? "Where are the items, the scanner and the bagging area?" : "Where are the zones?"}
+                </h2>
                 <p className="muted small" style={{ margin: 0 }}>
                   Works from any camera angle: mark where things are in <em>this</em> picture, or let Gemini suggest it.
                   The zones are drawn on the stills Gemini sees.

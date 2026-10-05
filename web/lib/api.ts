@@ -1,5 +1,6 @@
 import { appCheckToken } from "./firebase";
 import type {
+  AskAnswer,
   CameraLayout,
   Incident,
   InvestigationEvent,
@@ -75,6 +76,11 @@ export const api = {
     request<Rule>("/api/rules", { method: "POST", body: JSON.stringify({ source_text, spec }) }),
   setRuleEnabled: (id: string, enabled: boolean) =>
     request<Rule>(`/api/rules/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+  ask: (incidentId: string, question: string) =>
+    request<AskAnswer>(`/api/incidents/${encodeURIComponent(incidentId)}/ask`, {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
   layouts: () => request<Record<string, CameraLayout>>("/api/layouts"),
   saveLayout: (cameraId: string, zones: ZoneHint[]) =>
     request<CameraLayout>(`/api/layouts/${encodeURIComponent(cameraId)}`, {
@@ -95,7 +101,7 @@ export const api = {
 };
 
 export interface MarkedStill {
-  label: "before" | "reach" | "hold" | "after";
+  label: "before" | "reach" | "hold" | "after" | "pickup_start" | "scanner_mid" | "bagging_end";
   blob: Blob;
 }
 

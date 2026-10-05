@@ -39,7 +39,20 @@ class Settings:
     inline_clip_bytes: int = 14 * 1024 * 1024
     clip_fps: int = 5
     agent_max_tool_calls: int = 4
-    agent_deadline_s: int = 45
+    # Whole-investigation budget. Firebase Hosting drops forwarded requests after ~60 s, so stay well inside it.
+    agent_deadline_s: int = 50
+    # "Ask about this incident" agent budget (text only, so much faster)
+    ask_deadline_s: int = 25
+    # Backup models tried in order when the main one is overloaded (503) or rate limited (429)
+    fallback_models: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            m.strip()
+            for m in _env("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-2.5-flash-lite").split(",")
+            if m.strip()
+        )
+    )
+    # Gemini 3+ thinking level for investigations: MINIMAL, LOW, MEDIUM, HIGH, or DEFAULT
+    thinking_level: str = field(default_factory=lambda: _env("GEMINI_THINKING_LEVEL", "LOW"))
 
     # Abuse / quota protection
     per_ip_per_minute: int = field(default_factory=lambda: _env_int("PER_IP_PER_MINUTE", 6))
@@ -47,6 +60,7 @@ class Settings:
     daily_rule_compiles: int = field(default_factory=lambda: _env_int("DAILY_RULE_COMPILES", 100))
     daily_zone_suggestions: int = field(default_factory=lambda: _env_int("DAILY_ZONE_SUGGESTIONS", 30))
     daily_layout_saves: int = field(default_factory=lambda: _env_int("DAILY_LAYOUT_SAVES", 200))
+    daily_questions: int = field(default_factory=lambda: _env_int("DAILY_QUESTIONS", 60))
     max_frame_bytes: int = 2 * 1024 * 1024
 
     # "firestore" on Cloud Run; "memory" for local runs without Google credentials (data resets on restart)

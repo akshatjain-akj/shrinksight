@@ -4,6 +4,7 @@ import type { Pt, ZoneShape } from "./geometry.ts";
 import type { ZoneHint, ZoneSuggestion } from "../types.ts";
 
 export const ZONE_COLOURS: Record<string, string> = {
+  pickup: "#f472b6",
   scanner: "#fbbf24",
   bagging: "#38bdf8",
   shelf: "#34d399",
@@ -11,6 +12,7 @@ export const ZONE_COLOURS: Record<string, string> = {
 };
 
 export const ZONE_LABELS: Record<string, string> = {
+  pickup: "ITEMS",
   scanner: "SCANNER",
   bagging: "BAGGING",
   shelf: "SHELF",

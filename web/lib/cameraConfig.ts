@@ -60,6 +60,11 @@ export function hasSavedLayout(cameraId: string): boolean {
   return Object.keys(loadCameraConfigs()[cameraId]?.polygons ?? {}).length > 0;
 }
 
+/** Zones someone actually marked for this camera (others are only placeholder presets). */
+export function savedZoneIds(cameraId: string): string[] {
+  return Object.keys(loadCameraConfigs()[cameraId]?.polygons ?? {});
+}
+
 export function savedDescriptions(cameraId: string): Record<string, string> {
   return { ...(loadCameraConfigs()[cameraId]?.descriptions ?? {}) };
 }

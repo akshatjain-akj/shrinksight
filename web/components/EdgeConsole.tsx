@@ -6,11 +6,12 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, investigateStream } from "@/lib/api";
 import { useRules, useStore } from "@/lib/hooks";
 import type { Tier1Hit } from "@/lib/tier1/engine.ts";
-import { hasSavedLayout, polygonsForCamera, savedDescriptions, syncLayoutsFromServer } from "@/lib/cameraConfig";
+import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { drawZoneOutlines, shapesToHints } from "@/lib/tier1/zones";
 import { personBox, type Pt, type ZoneShape } from "@/lib/tier1/geometry.ts";
 import { PersonTracker } from "@/lib/tier1/tracks.ts";
 import { Tier1Engine } from "@/lib/tier1/engine.ts";
+import { privacyBoxes } from "@/lib/tier1/privacy.ts";
 import { pickFour, type TimedStill } from "@/lib/tier1/stills.ts";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision.ts";
 import type { Camera } from "@/lib/types";
@@ -170,7 +171,7 @@ export default function EdgeConsole() {
   const checkTillRef = useRef(true);
   const zonesRef = useRef<ZoneShape[]>([]);
   // Saved zones are burned into the blurred clip and stills, and sent as hints. Presets never are.
-  const burnZonesRef = useRef(false);
+  const burnZonesRef = useRef<ZoneShape[]>([]);
   const zoneDescriptionsRef = useRef<Record<string, string>>({});
   const headerRef = useRef<Blob | null>(null);
   const clustersRef = useRef<Blob[]>([]);
@@ -194,7 +195,7 @@ export default function EdgeConsole() {
 
   /** Zones that were burned into this clip, so Gemini also gets them as exact coordinates. */
   const zoneMeta = () =>
-    burnZonesRef.current ? { zones: shapesToHints(zonesRef.current, zoneDescriptionsRef.current) } : { zones: [] };
+    ({ zones: shapesToHints(burnZonesRef.current, zoneDescriptionsRef.current) });
 
   useEffect(() => {
     consentRef.current = consent;
@@ -236,7 +237,8 @@ export default function EdgeConsole() {
     let current = true;
     const applyZones = () => {
       zonesRef.current = polygonsForCamera(camera.id, store.zones.filter((z) => camera.zone_ids.includes(z.id)));
-      burnZonesRef.current = hasSavedLayout(camera.id);
+      const marked = savedZoneIds(camera.id);
+      burnZonesRef.current = zonesRef.current.filter((zone) => marked.includes(zone.id));
       zoneDescriptionsRef.current = savedDescriptions(camera.id);
     };
     applyZones();
@@ -271,6 +273,7 @@ export default function EdgeConsole() {
     let slow = false;
     const fpsMarks: number[] = [];
     let lastPoses: { x: number; y: number; visibility?: number }[][] = [];
+    let rawPoses: { x: number; y: number; visibility?: number }[][] = [];
     let lastFaces: { originX: number; originY: number; width: number; height: number }[] = [];
     stopRef.current = false;
     startedRef.current = performance.now();
@@ -306,6 +309,7 @@ export default function EdgeConsole() {
       try {
         if (frame % (slow ? 4 : 2) === 0) {
           const found = modelsRef.current.pose.detectForVideo(video, now).landmarks ?? [];
+          rawPoses = found;
           lastPoses = found.filter((pose) => posePeople([pose], 0).length > 0);
         }
         if (frame % 3 === 0) {
@@ -321,7 +325,8 @@ export default function EdgeConsole() {
       btx.fillStyle = "#070d18";
       btx.fillRect(0, 0, W, H);
       btx.drawImage(video, fit.ox, fit.oy, srcW * fit.scale, srcH * fit.scale);
-      for (const box of lastFaces) {
+      // Face detector boxes plus pose-derived heads, so distant faces are blurred too.
+      for (const box of privacyBoxes(lastFaces, rawPoses, srcW, srcH)) {
         blurBox(
           btx,
           scratch,
@@ -336,10 +341,10 @@ export default function EdgeConsole() {
       const tick = watched.tick;
       phaseRef.current = { reachAtMs: tick.reachAtMs, holdAtMs: tick.holdAtMs };
       for (const mark of watched.boxes) strokePersonBox(btx, mark.box, fit, srcW, srcH);
-      if (burnZonesRef.current) {
+      if (burnZonesRef.current.length) {
         drawZoneOutlines(
           btx,
-          zonesRef.current,
+          burnZonesRef.current,
           (p) => [fit.ox + p.x * srcW * fit.scale, fit.oy + p.y * srcH * fit.scale],
           0.8,
         );

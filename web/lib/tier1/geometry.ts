@@ -23,6 +23,7 @@ export function rect(x: number, y: number, w: number, h: number): Pt[] {
 
 /** Same layout on every camera of a kind, so the overlay matches the rule engine. */
 const PRESET: Record<string, Pt[]> = {
+  pickup: rect(0.06, 0.4, 0.24, 0.3),
   scanner: rect(0.36, 0.42, 0.22, 0.16),
   bagging: rect(0.64, 0.34, 0.28, 0.4),
   shelf: rect(0.08, 0.16, 0.56, 0.58),

@@ -50,6 +50,11 @@ def reconcile(verdict: VerdictOut, receipt: list[ReceiptLine]) -> tuple[VerdictO
             f"You listed {out.items_seen} items but the receipt has {len(receipt)} lines. Every receipt line was "
             f"scanned, so at least {len(receipt)} items were handled. Look again for items you missed."
         )
+    if out.starting_items and out.items_seen < len(out.starting_items):
+        soft.append(
+            f"You counted {len(out.starting_items)} items in the item pile at the start but listed only "
+            f"{out.items_seen} handled. Follow every item from the pile."
+        )
     if out.verdict == "SCAN_AVOIDANCE" and unscanned == 0:
         hard.append("The verdict is SCAN_AVOIDANCE, but every item you listed matches a receipt line.")
     if out.verdict == "BENIGN" and unscanned > 0:

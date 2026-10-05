@@ -1,12 +1,15 @@
-"""Tier-2 investigator: Gemini watches a clip, uses tools, and returns a structured verdict.
+"""Tier-2 investigator: Gemini watches a clip once and returns a structured, receipt-checked verdict.
 
 Flow (each step is streamed to the browser as a progress event):
-  1. Agent pass: video + store context + tool declarations. Gemini may call up to N tools
-     (till receipt, zone policy, item price); we execute them and feed results back.
-  2. Verdict pass: a fresh request with the video, the tool results and the agent's notes,
-     forced into the VerdictOut JSON schema. Kept separate from the tool pass because
-     "tools + forced JSON" in one call isn't reliable across models.
-  3. Validate, price unscanned items deterministically, save the incident, cache the result.
+  1. Server-side lookups: the till receipt (self-checkout) or the zone policy (shop floor). We know what is
+     needed, so there is no tool round trip and the video is not re-sent for it.
+  2. One Gemini call: marked stills + zone close-ups + the clip + receipt/zone context, forced into the
+     VerdictOut JSON schema. Thinking is kept low; overloaded models fall back to backup models.
+  3. Receipt-first reconciliation. Only if the answer contradicts the receipt (or isn't valid JSON) and time
+     allows, Gemini is asked once more. A remaining contradiction becomes INCONCLUSIVE, never a false alarm.
+  4. Prices are added deterministically, the incident is saved and cached.
+Everything runs inside a hard time budget (settings.agent_deadline_s) so it ends before Firebase Hosting's
+60 s limit; if time runs out after Gemini has answered, that answer is still used.
 """
 
 import hashlib
@@ -20,7 +23,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .config import Settings
-from .gemini import Gateway, GeminiUnavailable, GenResult
+from .gemini import FALLBACK_CODES, Gateway, GeminiUnavailable, model_chain, seconds_left, thinking_config
 from .models import (
     POSITIVE_VERDICTS,
     Camera,
@@ -38,7 +41,7 @@ from .repo import Repo, match_sku
 from .zones import zones_context
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-05.receipt-first"
+PROMPT_VERSION = "2026-10-06.single-pass"
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
                 "video/mov": "video/mov", "video/3gpp": "video/3gpp"}
@@ -47,6 +50,16 @@ TOOL_LABELS = {
     "get_pos_transaction": "Checking the till receipt",
     "get_zone_policy": "Checking the zone policy",
     "get_sku_price": "Looking up the item price",
+}
+
+STILL_TEXT = {
+    "before": "Still: before",
+    "reach": "Still: reach",
+    "hold": "Still: hold",
+    "after": "Still: after",
+    "pickup_start": "Close-up: the item pile at the start (count every item here)",
+    "scanner_mid": "Close-up: the scanner zone mid-clip",
+    "bagging_end": "Close-up: the bagging area at the end (what ended up in the bag)",
 }
 
 SYSTEM_PROMPT = """You are a retail loss-prevention investigator reviewing a short CCTV clip.
@@ -64,61 +77,31 @@ Verdicts:
 - BENIGN: the activity has an innocent explanation (e.g. taking out a phone, rescanning, putting items back).
 - INCONCLUSIVE: footage is unclear or too short to decide.
 
-Method:
-- Self-checkout, receipt first: call get_pos_transaction first; the receipt is the truth about what was
-  scanned. Then list EVERY item handled, in order, with its clip timestamp. Match each item to the receipt line
-  it corresponds to by what it looks like (each line can match only one item). An item is unscanned ONLY if no
-  receipt line matches it. Also note where each item went relative to the scanner zone; this is supporting
-  evidence, not the deciding factor. The scanner may be a real scanner or just a marked area (paper, tape, a
-  box); use the marked zone boxes and descriptions when given. For each unmatched item, call get_sku_price.
-- Shop floor: watch where picked-up items go. Call get_zone_policy for the zone involved.
+Method for a self-checkout (receipt first):
+1. Inventory: list in starting_items every item visible in the item pile / pickup area at the start (use the
+   item-pile close-up). Thin or small items (flower stems, pens, cards, sachets, cables) count as items.
+2. Follow every item, in order, with its clip timestamp. Match each one to the till receipt line it corresponds
+   to by what it looks like (each line matches at most one item). An item is unscanned ONLY if no receipt line
+   matches it. The receipt is the truth about what was scanned.
+3. Note where each item went relative to the scanner zone; this is supporting evidence, not the deciding factor.
+   The scanner may be a real scanner or a marked area (paper, tape, a box); use the marked zones when given.
+
+Method for the shop floor: watch where picked-up items go, using the zone policy provided.
 - A person lying flat on the floor is a health hazard, not a theft. Use RULE_BREACH and say they are down.
   Bending or reaching toward a shelf is not a fall.
-- Timestamps are relative to the clip start, formatted mm:ss.s. Bounding boxes use [ymin, xmin, ymax, xmax]
-  normalised to 0-1000.
-- Stills, when attached, come first, in time order. Labelled outlines mark the zones (SCANNER in amber,
-  BAGGING in blue); a red rectangle marks the person when present. Judge the stills and the video together.
+
+Format: timestamps are relative to the clip start, mm:ss.s. Bounding boxes use [ymin, xmin, ymax, xmax]
+normalised to 0-1000. Stills, when attached, come first: time-ordered stills, then close-ups at higher detail.
+Labelled outlines mark the zones (ITEMS in pink, SCANNER in amber, BAGGING in blue); a red rectangle marks the
+person when present. Judge the stills and the video together.
 """
 
-VERDICT_INSTRUCTION = """Give your final verdict as JSON matching the schema.
-List every item you saw handled in seen_items. For each: receipt_line = the number of the receipt line it
-matches (each line used at most once), or null if no line matches; scanned = true exactly when receipt_line is
-set; location = where it went relative to the scanner zone. items_seen and items_scanned must match seen_items.
+VERDICT_INSTRUCTION = """Return the verdict as JSON matching the schema.
+starting_items: every item in the item pile at the start (self-checkout), else an empty list.
+seen_items: every item you saw handled. For each: receipt_line = the number of the receipt line it matches (each
+line used at most once), or null if no line matches; scanned = true exactly when receipt_line is set; location =
+where it went relative to the scanner zone. items_seen and items_scanned must match seen_items.
 reason: one or two plain sentences, actions only."""
-
-
-def _tool_declarations(types, camera: Camera) -> list:
-    decls = [
-        types.FunctionDeclaration(
-            name="get_zone_policy",
-            description="Store policy and active rules for a zone (high-value flag, loitering limits).",
-            parameters_json_schema={
-                "type": "object",
-                "properties": {"zone_id": {"type": "string", "description": "Zone id from the store context"}},
-                "required": ["zone_id"],
-            },
-        ),
-        types.FunctionDeclaration(
-            name="get_sku_price",
-            description="Look up an item in the store catalogue by a short visual description; returns price.",
-            parameters_json_schema={
-                "type": "object",
-                "properties": {"description": {"type": "string", "description": "e.g. 'green wine bottle'"}},
-                "required": ["description"],
-            },
-        ),
-    ]
-    if camera.kind == "checkout":
-        decls.insert(0, types.FunctionDeclaration(
-            name="get_pos_transaction",
-            description="The till receipt (items actually scanned) for this self-checkout lane and visit.",
-            parameters_json_schema={
-                "type": "object",
-                "properties": {"lane_id": {"type": "string", "description": "Lane id, e.g. 'L2'"}},
-                "required": ["lane_id"],
-            },
-        ))
-    return decls
 
 
 class ToolBox:
@@ -243,13 +226,81 @@ def _still_parts(types, stills: list[tuple[str, bytes]]) -> list:
         return []
     labels = ", ".join(label.replace("_", " ") for label, _ in stills)
     parts = [types.Part.from_text(
-        text=f"Stills in time order ({labels}). Outlines mark the zones; a red rectangle marks the person when "
-        "present. The video follows."
+        text=f"Stills ({labels}): time-ordered stills first, then close-ups. Outlines mark the zones; a red "
+        "rectangle marks the person when present. The video follows."
     )]
     for label, data in stills:
-        parts.append(types.Part.from_text(text=f"Still: {label.replace('_', ' ')}"))
+        parts.append(types.Part.from_text(text=STILL_TEXT.get(label, f"Still: {label.replace('_', ' ')}")))
         parts.append(types.Part(inline_data=types.Blob(data=data, mime_type="image/jpeg")))
     return parts
+
+
+def _lookups(camera: Camera) -> list[tuple[str, dict[str, Any]]]:
+    """What the investigation always needs, fetched by the server instead of a Gemini tool round trip."""
+    if camera.kind == "checkout":
+        return [("get_pos_transaction", {"lane_id": camera.lane_id or ""})]
+    return [("get_zone_policy", {"zone_id": zone_id}) for zone_id in camera.zone_ids]
+
+
+def _briefing(context: str, receipt: list[ReceiptLine], tool_results: list[dict], camera: Camera) -> str:
+    parts = [context]
+    if camera.kind == "checkout":
+        parts.append(receipt_lines_text(receipt))
+        if receipt:
+            parts.append(
+                f"The receipt has {len(receipt)} lines, so at least {len(receipt)} items were handled "
+                "(more if any were not scanned)."
+            )
+    else:
+        policies = [t["result"] for t in tool_results if t["tool"] == "get_zone_policy"]
+        parts.append("Zone policy:\n" + json.dumps(policies, ensure_ascii=False))
+    parts.append(VERDICT_INSTRUCTION)
+    return "\n\n".join(parts)
+
+
+def _ms(since: float) -> int:
+    return round((time.monotonic() - since) * 1000)
+
+
+def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float):
+    """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, plain)."""
+    for index, model in enumerate(models):
+        plain = False
+        while True:
+            try:
+                result = gateway.generate(
+                    model, contents_for(plain), config_for(model, plain), deadline=deadline, retries=1
+                )
+                return result, model, plain
+            except GeminiUnavailable as exc:
+                if exc.code == 400 and not plain:
+                    # Some models reject fps / media resolution / thinking settings on a browser WebM.
+                    plain = True
+                    yield _progress("watching", "Retrying the clip without video settings")
+                    continue
+                has_backup = index < len(models) - 1
+                if exc.code in FALLBACK_CODES and has_backup and seconds_left(deadline) > 12:
+                    backup = models[index + 1]
+                    yield _progress("fallback", f"Gemini is busy · switching to backup model {backup}", model=backup)
+                    break
+                raise
+    raise GeminiUnavailable("No Gemini model is configured.")
+
+
+def _parse(text: str, receipt: list[ReceiptLine]):
+    """Returns (verdict | None, hard problems, soft problems, json error)."""
+    try:
+        parsed = VerdictOut.model_validate_json(text)
+    except ValidationError as exc:
+        return None, [], [], str(exc)[:400]
+    checked, hard, soft = reconcile(parsed, receipt)
+    return checked, hard, soft, None
+
+
+def _inconclusive(reason: str, base: VerdictOut | None = None) -> VerdictOut:
+    if base is not None:
+        return base.model_copy(update={"verdict": "INCONCLUSIVE", "reason": reason})
+    return VerdictOut(verdict="INCONCLUSIVE", confidence=0, items_seen=0, items_scanned=0, reason=reason)
 
 
 def investigate(
@@ -266,9 +317,10 @@ def investigate(
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event."""
     started = time.monotonic()
-    model = settings.investigator_model
+    deadline = started + settings.agent_deadline_s
+    models = model_chain(settings.investigator_model, settings.fallback_models)
     zones = zones or []
-    key = cache_key(clip, camera, transaction, model, stills, zones)
+    key = cache_key(clip, camera, transaction, settings.investigator_model, stills, zones)
 
     cached = repo.cache_get(key)
     if cached and (incident := repo.get_incident(cached["incident_id"])):
@@ -276,105 +328,108 @@ def investigate(
         yield {"type": "result", "incident": incident.model_dump(), "cached": True}
         return
 
+    timings: dict[str, int] = {}
     uploaded = None
     try:
         from google.genai import types
 
+        # ---- 1. Server-side lookups (instant; no Gemini round trip) ----
+        step = time.monotonic()
+        toolbox = ToolBox(repo, camera, transaction)
+        tool_log: list[ToolCallLog] = []
+        tool_results: list[dict] = []
+        for name, args in _lookups(camera):
+            if not tool_log or name != tool_log[-1].name:
+                yield _progress("tool", TOOL_LABELS[name], tool=name, args=args)
+            tool_log.append(ToolCallLog(name=name, args=args))
+            tool_results.append({"tool": name, "args": args, "result": toolbox.run(name, args)})
+        receipt = _receipt_lines(transaction, tool_results) if camera.kind == "checkout" else []
         context = _context_text(camera, repo, tier1_events, zones)
         marked = _still_parts(types, stills or [])
+        timings["lookup_ms"] = _ms(step)
+
+        # ---- 2. The clip: inline bytes, or the Files API for big clips ----
+        step = time.monotonic()
         if len(clip) > settings.inline_clip_bytes:
             yield _progress("upload", "Uploading the clip to Gemini")
-            uploaded = gateway.upload_video(clip, mime)
+            uploaded = gateway.upload_video(clip, mime, timeout_s=max(5.0, seconds_left(deadline) - 20))
             source = {"file_data": types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type)}
         else:
             source = {"inline_data": types.Blob(data=clip, mime_type=mime)}
         plain_video = types.Part(**source)
         video = types.Part(**source, video_metadata=types.VideoMetadata(fps=settings.clip_fps))
-        toolbox = ToolBox(repo, camera, transaction)
-        tool_log: list[ToolCallLog] = []
-        tool_results: list[dict] = []
+        timings["upload_ms"] = _ms(step)
 
-        # ---- 1. Agent pass with tools ----
+        briefing = _briefing(context, receipt, tool_results, camera)
+
+        def contents_for(plain: bool) -> list:
+            clip_part = plain_video if plain else video
+            return [types.Content(role="user", parts=[*marked, clip_part, types.Part.from_text(text=briefing)])]
+
+        def config_for(model: str, plain: bool):
+            return types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=VerdictOut,
+                temperature=0,
+                media_resolution=None if plain else types.MediaResolution.MEDIA_RESOLUTION_LOW,
+                thinking_config=None if plain else thinking_config(types, model, settings.thinking_level),
+            )
+
+        # ---- 3. Watch once ----
+        step = time.monotonic()
         yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
-        agent_config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            tools=[types.Tool(function_declarations=_tool_declarations(types, camera))],
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
-            temperature=0,
-        )
-        contents: list = [types.Content(role="user", parts=[*marked, video, types.Part.from_text(text=context)])]
-        notes = ""
-        stripped = False
-        while True:
-            _check_deadline(started, settings)
-            try:
-                result: GenResult = gateway.generate(model, contents, agent_config)
-            except GeminiUnavailable as exc:
-                # Some models reject fps / media-resolution on a browser WebM. Retry the bytes plain.
-                if exc.code != 400 or stripped:
-                    raise
-                stripped = True
-                yield _progress("watching", "Retrying the clip without video metadata")
-                plain_parts = [*marked, plain_video, types.Part.from_text(text=context)]
-                contents = [types.Content(role="user", parts=plain_parts)]
-                agent_config = types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    tools=[types.Tool(function_declarations=_tool_declarations(types, camera))],
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    temperature=0,
-                )
-                continue
-            notes = result.text or notes
-            budget = settings.agent_max_tool_calls - len(tool_log)
-            if not result.function_calls or budget <= 0:
-                break
+        result, model, plain = yield from _watch(gateway, models, contents_for, config_for, deadline)
+        timings["watch_ms"] = _ms(step)
+        first, hard, soft, json_error = _parse(result.text, receipt)
+        chosen, chosen_hard = (first, hard) if first is not None else (None, [])
+
+        # ---- 4. One re-check, only if the answer doesn't add up and there's time ----
+        if (json_error or hard or soft) and seconds_left(deadline) > 12:
+            step = time.monotonic()
+            yield _progress("recheck", "Double-checking against the till receipt" if receipt else "Double-checking")
+            problem = (
+                f"That JSON was invalid: {json_error}\nReturn corrected JSON only." if json_error else
+                "Your answer doesn't add up against the till receipt:\n- " + "\n- ".join(hard + soft)
+                + "\nWatch again and return corrected JSON only."
+            )
+            follow_up = contents_for(plain)
             if result.content is not None:
-                contents.append(result.content)
-            responses = []
-            for call in result.function_calls[:budget]:
-                yield _progress("tool", TOOL_LABELS.get(call.name, call.name), tool=call.name, args=call.args)
-                output = toolbox.run(call.name, call.args)
-                tool_log.append(ToolCallLog(name=call.name, args=call.args))
-                tool_results.append({"tool": call.name, "args": call.args, "result": output})
-                responses.append(types.Part.from_function_response(name=call.name, response=output))
-            contents.append(types.Content(role="user", parts=responses))
+                follow_up.append(result.content)
+            follow_up.append(types.Content(role="user", parts=[types.Part.from_text(text=problem)]))
+            try:
+                again = gateway.generate(model, follow_up, config_for(model, plain), deadline=deadline, retries=0)
+                second, hard2, _, _ = _parse(again.text, receipt)
+                if second is not None and (not hard2 or chosen is None or chosen_hard):
+                    chosen, chosen_hard = second, hard2
+            except GeminiUnavailable:
+                pass  # out of time or busy: keep the first answer
+            timings["recheck_ms"] = _ms(step)
 
-        # A self-checkout verdict is meaningless without the receipt; fetch it if the model didn't.
-        if camera.kind == "checkout" and not any(t["tool"] == "get_pos_transaction" for t in tool_results):
-            args = {"lane_id": camera.lane_id or ""}
-            yield _progress("tool", TOOL_LABELS["get_pos_transaction"], tool="get_pos_transaction", args=args)
-            tool_log.append(ToolCallLog(name="get_pos_transaction", args=args))
-            tool_results.append({"tool": "get_pos_transaction", "args": args,
-                                 "result": toolbox.run("get_pos_transaction", args)})
+        if chosen is None:
+            verdict = _inconclusive("Gemini's answer could not be validated, so this needs a human look.")
+        elif chosen_hard:
+            verdict = _inconclusive(
+                "Gemini's item list contradicted the till receipt, so this needs a human look. "
+                + " ".join(chosen_hard),
+                chosen,
+            )
+        else:
+            verdict = chosen
 
-        # ---- 2. Verdict pass with forced JSON ----
-        yield _progress("report", "Writing the incident report")
-        # If the model rejected video metadata above, the verdict pass must send the plain clip too.
-        receipt = _receipt_lines(transaction, tool_results) if camera.kind == "checkout" else []
-        verdict = _verdict_pass(
-            types, gateway, model, plain_video if stripped else video, context, tool_results, notes, started,
-            settings, marked, plain=stripped, receipt=receipt,
-        )
-
-        # ---- 3. Price, save, cache ----
+        # ---- 5. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
         incident.zones_used = zones
+        timings["total_ms"] = _ms(started)
+        incident.timings = timings
         repo.save_incident(incident)
         repo.cache_put(key, {"incident_id": incident.id})
         yield {"type": "result", "incident": incident.model_dump(), "cached": False}
     except GeminiUnavailable as exc:
         yield {"type": "error", "message": str(exc)}
-    except TimeoutError:
-        yield {"type": "error", "message": "The investigation took too long. Try a shorter clip."}
     finally:
         if uploaded is not None:
             gateway.delete_file(uploaded.name)  # clips are analysed, never kept
-
-
-def _check_deadline(started: float, settings: Settings) -> None:
-    if time.monotonic() - started > settings.agent_deadline_s:
-        raise TimeoutError
 
 
 def _receipt_lines(transaction: Transaction | None, tool_results: list[dict]) -> list[ReceiptLine]:
@@ -384,53 +439,6 @@ def _receipt_lines(transaction: Transaction | None, tool_results: list[dict]) ->
     if not result or not result.get("found"):
         return []
     return [ReceiptLine(name=line["name"], price_inr=line["price_inr"]) for line in result.get("lines", [])]
-
-
-def _verdict_pass(
-    types, gateway, model, video, context, tool_results, notes, started, settings, marked=None, plain=False,
-    receipt: list[ReceiptLine] | None = None,
-) -> VerdictOut:
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        response_mime_type="application/json",
-        response_schema=VerdictOut,
-        media_resolution=None if plain else types.MediaResolution.MEDIA_RESOLUTION_LOW,
-        temperature=0,
-    )
-    receipt = receipt or []
-    receipt_text = f"{receipt_lines_text(receipt)}\n\n" if receipt else ""
-    briefing = (
-        f"{context}\n\n{receipt_text}Tool results:\n{json.dumps(tool_results, ensure_ascii=False)}\n\n"
-        f"Your investigation notes:\n{notes or '(none)'}\n\n{VERDICT_INSTRUCTION}"
-    )
-    contents: list = [types.Content(role="user", parts=[*(marked or []), video, types.Part.from_text(text=briefing)])]
-    attempts = 2  # one re-ask, used for invalid JSON or for an answer that contradicts the receipt
-    for attempt in range(attempts):
-        _check_deadline(started, settings)
-        result = gateway.generate(model, contents, config)
-        last = attempt == attempts - 1
-        try:
-            parsed = VerdictOut.model_validate_json(result.text)
-        except ValidationError as exc:
-            contents.append(types.Content(role="user", parts=[types.Part.from_text(
-                text=f"That JSON was invalid: {str(exc)[:500]}\nReturn corrected JSON only.")]))
-            continue
-        checked, hard, soft = reconcile(parsed, receipt)
-        if not hard and (not soft or last):
-            return checked
-        if last:
-            return checked.model_copy(update={
-                "verdict": "INCONCLUSIVE",
-                "reason": "Gemini's item list contradicted the till receipt, so this needs a human look. "
-                + " ".join(hard),
-            })
-        if result.content is not None:
-            contents.append(result.content)
-        contents.append(types.Content(role="user", parts=[types.Part.from_text(
-            text="Your answer doesn't add up against the till receipt:\n- " + "\n- ".join(hard + soft)
-            + "\nWatch again and return corrected JSON only.")]))
-    return VerdictOut(verdict="INCONCLUSIVE", confidence=0, items_seen=0, items_scanned=0,
-                      reason="The model's answer could not be validated, so this needs a human look.")
 
 
 def _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started) -> Incident:

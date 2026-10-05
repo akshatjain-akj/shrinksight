@@ -5,6 +5,7 @@ import { loadCameraConfigs, polygonsForCamera } from "@/lib/cameraConfig";
 import { personBox, type Pt } from "@/lib/tier1/geometry";
 import { Tier1Engine } from "@/lib/tier1/engine";
 import { PersonTracker } from "@/lib/tier1/tracks";
+import { privacyBoxes } from "@/lib/tier1/privacy";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision";
 import type { Camera, Rule, Zone } from "@/lib/types";
 
@@ -158,8 +159,17 @@ export default function LiveScan({
     let frame = 0;
     let lastVideoTime = -1;
     let lastPoses: Landmark[][] = [];
+    let rawPoses: Landmark[][] = [];
     let lastDetail = "";
+    let lastProcessed = 0;
+    let onScreen = true;
     const started = performance.now();
+    // Only scan tiles that are on screen; a hidden tab or a scrolled-away tile costs nothing.
+    const observer = new IntersectionObserver(([entry]) => {
+      onScreen = entry?.isIntersecting ?? true;
+    });
+    if (canvas.parentElement) observer.observe(canvas.parentElement);
+    const PROCESS_EVERY_MS = 66; // ~15 scans per second is plenty for tracking and keeps the page smooth
     acquireModels()
       .then((loaded) => {
         if (!alive) return;
@@ -174,6 +184,16 @@ export default function LiveScan({
       if (!alive || !models || video.readyState < 2) return;
       if (video.currentTime + 0.5 < lastVideoTime) lastDetail = "";
       if (video.paused || video.ended || video.currentTime === lastVideoTime) return;
+      if (document.hidden || !onScreen) {
+        if (facesReady) {
+          facesReady = false; // re-check faces before showing the picture again
+          video.style.filter = "blur(18px)";
+        }
+        return;
+      }
+      const tick = performance.now();
+      if (facesReady && tick - lastProcessed < PROCESS_EVERY_MS) return;
+      lastProcessed = tick;
       lastVideoTime = video.currentTime;
       const width = video.videoWidth;
       const height = video.videoHeight;
@@ -183,8 +203,9 @@ export default function LiveScan({
       frame += 1;
       const now = performance.now();
       try {
-        if (frame % 2 === 0) {
+        if (frame % 2 === 0 || !facesReady) {
           const found = models.pose.detectForVideo(video, nextStamp()).landmarks ?? [];
+          rawPoses = found;
           lastPoses = found.filter((pose) => posePeople([pose], 0).length > 0);
         }
         if (frame % 3 === 1 || !facesReady) {
@@ -207,7 +228,8 @@ export default function LiveScan({
       tracker.setWatchHealth(loadCameraConfigs()[active.id]?.detection.healthHazard !== false);
       const watched = tracker.update(posePeople(lastPoses, now - started), now - started);
       ctx.clearRect(0, 0, width, height);
-      for (const face of faces) pixelateFace(ctx, scratch, video, face);
+      // Faces from the face detector plus heads from the pose model (works at CCTV distance).
+      for (const box of privacyBoxes(faces, rawPoses, width, height)) pixelateFace(ctx, scratch, video, box);
       ctx.lineWidth = Math.max(2, width / 320);
       for (const zone of shapes) {
         ctx.strokeStyle = zone.kind === "scanner" ? "#fbbf24" : zone.kind === "bagging" ? "#38bdf8" : "#34d399";
@@ -259,6 +281,7 @@ export default function LiveScan({
     raf = requestAnimationFrame(loop);
     return () => {
       alive = false;
+      observer.disconnect();
       cancelAnimationFrame(raf);
       releaseModels();
     };

@@ -27,6 +27,14 @@ line; an item counts as unscanned only if no line matches. Answers that contradi
 then marked inconclusive instead of raising a false alarm. Each camera's scanner and bagging areas are marked once
 (or suggested by Gemini from a frame) and drawn onto the stills Gemini sees, so any camera angle works.
 Measured with the [evaluation harness](eval/README.md).
+
+**How an investigation stays fast:** the server looks up the receipt (or zone policy) first, so Gemini watches the
+clip **once** (stills, zone close-ups and the video in a single call) with low thinking. A re-check only happens
+if the answer contradicts the receipt. Everything runs inside a 50-second budget; if a model is overloaded, backup
+models take over automatically. Each incident records where the time went.
+
+**Ask about this incident:** a Gemini agent with function calling answers questions such as "Has this lane had
+other missed scans today?" by looking up incidents, receipts, zone policies and prices, and shows each lookup.
 ## Data flow
 
 A live clip is not stored. Gemini sees a short face-blurred WebM, then only the incident and a cache pointer are kept.

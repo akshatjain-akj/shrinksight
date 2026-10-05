@@ -2,11 +2,12 @@
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from .gemini import Gateway
+from .gemini import Gateway, call_with_fallback, model_chain
 from .models import RuleSpec, Zone, validate_rule_spec
 
 SYSTEM_PROMPT = """You convert a store manager's plain-English loss-prevention rule into a structured rule.
@@ -42,7 +43,9 @@ def cache_key(text: str, zones: list[Zone], model: str) -> str:
     return "rule:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
-def compile_rule(text: str, zones: list[Zone], gateway: Gateway, model: str, repo) -> CompileResult:
+def compile_rule(
+    text: str, zones: list[Zone], gateway: Gateway, model: str, repo, fallbacks: tuple[str, ...] = ()
+) -> CompileResult:
     from google.genai import types
 
     key = cache_key(text, zones, model)
@@ -60,7 +63,9 @@ def compile_rule(text: str, zones: list[Zone], gateway: Gateway, model: str, rep
         response_schema=RuleSpec,
         temperature=0,
     )
-    result = gateway.generate(model, [prompt], config)
+    result, _ = call_with_fallback(
+        gateway, model_chain(model, fallbacks), [prompt], lambda _model: config, deadline=time.monotonic() + 25
+    )
     try:
         spec = RuleSpec.model_validate_json(result.text)
     except ValidationError:

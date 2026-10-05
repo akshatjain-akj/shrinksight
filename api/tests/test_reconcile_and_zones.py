@@ -68,7 +68,7 @@ def test_receipt_lines_are_numbered_for_the_prompt():
 # ---------- investigator with receipt-first + zones ----------
 def test_contradiction_is_re_asked_then_accepted(repo, settings):
     wrong = verdict_json(seen_items=[{"t": "00:01", "description": d, "scanned": False} for d in ("a", "b", "c")])
-    gateway = FakeGateway([text("notes"), text(wrong), text(verdict_json())])
+    gateway = FakeGateway([text(wrong), text(verdict_json())])
 
     events = list(investigate(CLIP, "video/webm", camera(repo, "cam-sco-2"), repo.get_transaction("TXN-L2-2041"),
                               repo, gateway, settings))
@@ -79,7 +79,7 @@ def test_contradiction_is_re_asked_then_accepted(repo, settings):
 
 def test_contradiction_twice_becomes_inconclusive(repo, settings):
     wrong = verdict_json(seen_items=[{"t": "00:01", "description": d, "scanned": True} for d in ("a", "b", "c")])
-    gateway = FakeGateway([text("notes"), text(wrong), text(wrong)])
+    gateway = FakeGateway([text(wrong), text(wrong)])
 
     events = list(investigate(CLIP, "video/webm", camera(repo, "cam-sco-2"), repo.get_transaction("TXN-L2-2041"),
                               repo, gateway, settings))
@@ -95,7 +95,7 @@ def test_zones_reach_the_prompt_change_the_cache_key_and_are_recorded(repo, sett
     seen = [{"t": "00:01", "description": d, "scanned": True, "receipt_line": i}
             for i, d in enumerate(["milk", "bread", "chips", "chocolate"], start=1)]
     benign = verdict_json(verdict="BENIGN", items_scanned=4, seen_items=seen)
-    gateway = FakeGateway([text("notes"), text(benign), text("notes"), text(benign)])
+    gateway = FakeGateway([text(benign), text(benign)])
 
     first = list(investigate(CLIP, "video/webm", camera(repo, "cam-sco-1"), txn, repo, gateway, settings, zones=[hint]))
     second = list(investigate(CLIP, "video/webm", camera(repo, "cam-sco-1"), txn, repo, gateway, settings, zones=[]))
@@ -125,8 +125,9 @@ def test_suggestions_are_cleaned_cached_and_cover_every_zone(repo):
     first, cached1 = suggest_zones(b"\xff\xd8jpeg", "image/jpeg", cam, repo.zones(), gateway, "m", repo)
     second, cached2 = suggest_zones(b"\xff\xd8jpeg", "image/jpeg", cam, repo.zones(), gateway, "m", repo)
 
-    assert [s.zone_id for s in first] == ["z-scan-1", "z-bag-1"]
-    assert first[0].found and not first[1].found and first[1].box_2d == []
+    by_id = {s.zone_id: s for s in first}
+    assert [s.zone_id for s in first] == ["z-pick-1", "z-scan-1", "z-bag-1"]
+    assert by_id["z-scan-1"].found and not by_id["z-bag-1"].found and by_id["z-bag-1"].box_2d == []
     assert (cached1, cached2) == (False, True) and second == first
 
 
@@ -134,7 +135,7 @@ def test_invalid_suggested_box_is_marked_not_found(repo):
     raw = {"zones": [{"zone_id": "z-scan-1", "found": True, "box_2d": [500, 400, 505, 600]}]}
     suggestions, _ = suggest_zones(b"img", "image/png", camera(repo, "cam-sco-1"), repo.zones(),
                                    FakeGateway([text(json.dumps(raw))]), "m", repo)
-    assert suggestions[0].found is False
+    assert all(s.found is False for s in suggestions)
 
 
 # ---------- layout endpoints ----------
@@ -159,6 +160,7 @@ def test_suggest_endpoint(api):
     res = api.post("/api/layouts/cam-sco-1/suggest", content=b"\xff\xd8frame", headers={"content-type": "image/jpeg"})
 
     assert res.status_code == 200
-    assert res.json()["zones"][0]["box_2d"] == [500, 400, 700, 600]
+    scanner = next(z for z in res.json()["zones"] if z["zone_id"] == "z-scan-1")
+    assert scanner["box_2d"] == [500, 400, 700, 600]
     assert api.post("/api/layouts/cam-sco-1/suggest", content=b"x",
                     headers={"content-type": "text/plain"}).status_code == 415

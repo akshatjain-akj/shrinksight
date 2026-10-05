@@ -11,7 +11,7 @@ export interface Zone {
   id: string;
   name: string;
   camera_id: string;
-  kind: "scanner" | "bagging" | "shelf" | "exit";
+  kind: "pickup" | "scanner" | "bagging" | "shelf" | "exit";
   high_value: boolean;
 }
 
@@ -65,6 +65,7 @@ export interface Verdict {
   confidence: number;
   items_seen: number;
   items_scanned: number;
+  starting_items?: string[];
   seen_items: SeenItem[];
   timeline: TimelineEvent[];
   reason: string;
@@ -116,6 +117,14 @@ export interface Incident {
   tool_calls: { name: string; args: Record<string, unknown> }[];
   reviewed_at: string | null;
   zones_used?: ZoneHint[];
+  /** Where the investigation's time went, in ms (lookup, upload, watch, recheck, total). */
+  timings?: Record<string, number>;
+}
+
+export interface AskAnswer {
+  answer: string;
+  steps: { tool: string; label: string; args: Record<string, unknown> }[];
+  model: string;
 }
 
 export interface RuleSpec {

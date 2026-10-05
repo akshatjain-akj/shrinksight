@@ -73,7 +73,7 @@ def test_rule_with_unknown_zone_cannot_be_saved(api):
 
 
 def test_investigate_streams_progress_then_result(api):
-    main.app.state.gateway = FakeGateway([text("notes"), text(verdict_json())])
+    main.app.state.gateway = FakeGateway([text(verdict_json())])
     receipt = [{"name": "Toned milk 1L", "price_inr": 68}, {"name": "Whole wheat bread", "price_inr": 50},
                {"name": "Potato chips 150g packet", "price_inr": 50}]
 
@@ -108,7 +108,8 @@ def test_investigate_rejects_bad_requests(api):
 
 
 def test_investigate_accepts_marked_stills(api):
-    main.app.state.gateway = FakeGateway([text("notes"), text(verdict_json())])
+    main.app.state.gateway = FakeGateway([text(verdict_json(verdict="BENIGN", seen_items=[], items_seen=0,
+                                                            items_scanned=0))])
     jpeg = b"\xff\xd8\xff\xd9"
     res = api.post(
         "/api/investigate",

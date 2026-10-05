@@ -1,8 +1,9 @@
 import json
+from dataclasses import replace
 
-from conftest import FakeGateway, call, text
+from conftest import FakeGateway, text
 
-from app.gemini import FunctionCall, GeminiUnavailable, GenResult
+from app.gemini import GeminiUnavailable
 from app.investigator import investigate, normalise_mime
 
 CLIP = b"\x00fake-video-bytes"
@@ -35,33 +36,48 @@ def camera(repo, camera_id):
     return next(c for c in repo.cameras() if c.id == camera_id)
 
 
-def run(repo, gateway, settings, camera_id="cam-sco-2", transaction=None):
-    return list(investigate(CLIP, "video/webm", camera(repo, camera_id), transaction, repo, gateway, settings))
+def run(repo, gateway, settings, camera_id="cam-sco-2", transaction=None, **kwargs):
+    cam = camera(repo, camera_id)
+    return list(investigate(CLIP, "video/webm", cam, transaction, repo, gateway, settings, **kwargs))
 
 
-def test_checkout_scan_avoidance_end_to_end(repo, settings):
-    txn = repo.get_transaction("TXN-L2-2041")
-    gateway = FakeGateway([call("get_pos_transaction", lane_id="L2"), text("wine skipped"), text(verdict_json())])
+def steps(events):
+    return [e["step"] for e in events if e["type"] == "progress"]
 
-    events = run(repo, gateway, settings, transaction=txn)
 
-    steps = [e.get("step") for e in events if e["type"] == "progress"]
-    assert steps == ["watching", "tool", "report"]
-    result = events[-1]
-    assert result["type"] == "result" and result["cached"] is False
-    incident = result["incident"]
+# ---------- single-pass flow ----------
+def test_checkout_scan_avoidance_in_one_gemini_call(repo, settings):
+    gateway = FakeGateway([text(verdict_json())])
+
+    events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    assert len(gateway.calls) == 1, "the video must be sent to Gemini once"
+    assert steps(events) == ["tool", "watching"]
+    incident = events[-1]["incident"]
+    assert events[-1]["cached"] is False
     assert incident["status"] == "NEEDS_REVIEW"
     assert incident["transaction_id"] == "TXN-L2-2041"
     assert [u["matched_sku"] for u in incident["unscanned_items"]] == ["SKU-0005"]
     assert incident["est_loss_inr"] == 1850
     assert incident["tool_calls"][0]["name"] == "get_pos_transaction"
-    assert repo.get_incident(incident["id"]) is not None
-    assert all(c[0] == "test-model" for c in gateway.calls)
+    assert set(incident["timings"]) >= {"lookup_ms", "upload_ms", "watch_ms", "total_ms"}
+
+
+def test_receipt_count_and_lines_are_in_the_prompt_up_front(repo, settings):
+    gateway = FakeGateway([text(verdict_json())])
+
+    run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    briefing = gateway.calls[0][1][0].parts[-1].text
+    assert "1. Toned milk 1L" in briefing
+    assert "The receipt has 3 lines, so at least 3 items were handled" in briefing
+    config = gateway.calls[0][2]
+    assert config.response_schema is not None and config.tools is None
 
 
 def test_same_clip_is_served_from_cache_without_calling_gemini(repo, settings):
     txn = repo.get_transaction("TXN-L2-2041")
-    first = run(repo, FakeGateway([text("notes"), text(verdict_json())]), settings, transaction=txn)
+    first = run(repo, FakeGateway([text(verdict_json())]), settings, transaction=txn)
     second_gateway = FakeGateway([])
 
     second = run(repo, second_gateway, settings, transaction=txn)
@@ -71,34 +87,33 @@ def test_same_clip_is_served_from_cache_without_calling_gemini(repo, settings):
     assert second_gateway.calls == []
 
 
-def test_receipt_is_fetched_even_if_model_skips_the_tool(repo, settings):
+def test_latest_lane_receipt_is_used_when_none_is_attached(repo, settings):
     all_matched = [
         {"t": f"00:0{i}.0", "description": name, "scanned": True, "receipt_line": i, "location": "over_scanner"}
         for i, name in enumerate(["soft drink bottle", "noodles pack", "biscuits pack", "oil bottle"], start=1)
     ]
-    benign = verdict_json(verdict="BENIGN", items_scanned=4, seen_items=all_matched)
-    gateway = FakeGateway([text("all scanned"), text(benign)])
+    gateway = FakeGateway([text(verdict_json(verdict="BENIGN", items_scanned=4, seen_items=all_matched))])
 
     events = run(repo, gateway, settings)
 
     incident = events[-1]["incident"]
-    assert incident["tool_calls"][0]["name"] == "get_pos_transaction"
     assert incident["status"] == "REJECTED"
+    assert incident["transaction_id"] == "TXN-L2-2043"
     assert incident["unscanned_items"] == [] and incident["est_loss_inr"] == 0
-    assert incident["receipt"], "latest seeded Lane 2 receipt should be attached"
 
 
 def test_invalid_json_is_re_asked_once(repo, settings):
-    gateway = FakeGateway([text("notes"), text("{not json"), text(verdict_json())])
+    gateway = FakeGateway([text("{not json"), text(verdict_json())])
 
-    events = run(repo, gateway, settings)
+    events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
 
     assert events[-1]["incident"]["verdict"]["verdict"] == "SCAN_AVOIDANCE"
-    assert len(gateway.calls) == 3
+    assert len(gateway.calls) == 2
+    assert "recheck" in steps(events)
 
 
-def test_invalid_json_twice_becomes_inconclusive(repo, settings):
-    gateway = FakeGateway([text("notes"), text("nope"), text("still nope")])
+def test_invalid_json_twice_becomes_inconclusive_not_an_error(repo, settings):
+    gateway = FakeGateway([text("nope"), text("still nope")])
 
     events = run(repo, gateway, settings)
 
@@ -107,123 +122,149 @@ def test_invalid_json_twice_becomes_inconclusive(repo, settings):
     assert incident["status"] == "NEEDS_REVIEW"
 
 
-def test_gemini_outage_yields_an_error_event(repo, settings):
-    gateway = FakeGateway([GeminiUnavailable("quota reached", 429)])
-
-    events = run(repo, gateway, settings)
-
-    assert events[-1] == {"type": "error", "message": "quota reached"}
-
-
-def test_tool_calls_are_capped(repo, settings):
-    many = GenResult(function_calls=[FunctionCall("get_sku_price", {"description": "wine"})] * 10)
-    gateway = FakeGateway([many, text("budget used, notes"), text(verdict_json())])
-
-    events = run(repo, gateway, settings, camera_id="cam-aisle-4")
-
-    assert len(events[-1]["incident"]["tool_calls"]) == settings.agent_max_tool_calls
-
-
-def test_floor_concealment_prices_the_hidden_item(repo, settings):
+def test_floor_camera_gets_zone_policy_and_prices_the_hidden_item(repo, settings):
     concealment = verdict_json(
         verdict="CONCEALMENT", items_seen=1, items_scanned=0,
         seen_items=[{"t": "00:03.4", "description": "whisky bottle", "scanned": False}],
     )
-    gateway = FakeGateway([call("get_zone_policy", zone_id="z-spirits"), text("into jacket"), text(concealment)])
+    gateway = FakeGateway([text(concealment)])
 
     events = run(repo, gateway, settings, camera_id="cam-aisle-4")
 
     incident = events[-1]["incident"]
     assert incident["camera_kind"] == "floor" and incident["receipt"] == []
+    assert incident["tool_calls"] == [{"name": "get_zone_policy", "args": {"zone_id": "z-spirits"}}]
+    assert "Zone policy" in gateway.calls[0][1][0].parts[-1].text
     assert incident["est_loss_inr"] == 2400
 
 
-def test_tier1_hints_reach_the_prompt(repo, settings):
-    gateway = FakeGateway([text("notes"), text(verdict_json())])
+# ---------- reliability: backup models, budget, metadata ----------
+def test_overloaded_model_falls_back_to_the_backup(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("overloaded", 503), text(verdict_json())])
+    with_backup = replace(settings, fallback_models=("backup-model",))
 
-    events = list(investigate(
-        CLIP, "video/webm", camera(repo, "cam-aisle-2"), None, repo, gateway, settings,
-        tier1_events=[{
-            "t": "00:01.2",
-            "kind": "CONCEALMENT",
-            "score": 0.7,
-            "detail": "wrist to pocket",
-            "camera_id": "cam-aisle-2",
-            "trigger": "hot_score",
-            "confidence": 0.66,
-            "box": [120, 80, 900, 420],
-        }],
-    ))
+    events = run(repo, gateway, with_backup, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    assert [c[0] for c in gateway.calls] == ["test-model", "backup-model"]
+    assert "fallback" in steps(events)
+    assert events[-1]["incident"]["model"] == "backup-model"
+
+
+def test_all_models_busy_is_a_clear_error(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("quota reached", 429), GeminiUnavailable("overloaded", 503)])
+
+    events = run(repo, gateway, replace(settings, fallback_models=("backup-model",)))
+
+    assert events[-1] == {"type": "error", "message": "overloaded"}
+
+
+def test_non_retryable_error_does_not_fall_back(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("bad key", 403)])
+
+    events = run(repo, gateway, replace(settings, fallback_models=("backup-model",)))
+
+    assert events[-1]["type"] == "error" and len(gateway.calls) == 1
+
+
+def test_metadata_rejection_retries_the_plain_clip(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("bad video metadata", 400), text(verdict_json())])
+
+    events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    assert events[-1]["type"] == "result"
+    _, contents, config = gateway.calls[-1]
+    videos = [p for p in contents[0].parts if p.inline_data and p.inline_data.mime_type == "video/webm"]
+    assert videos and all(p.video_metadata is None for p in videos)
+    assert config.media_resolution is None and config.thinking_config is None
+
+
+def test_no_recheck_when_the_budget_is_spent_first_answer_is_kept(repo, settings):
+    wrong = verdict_json(seen_items=[{"t": "00:01", "description": "a", "scanned": False}])
+    gateway = FakeGateway([text(wrong)])
+
+    events = run(repo, gateway, replace(settings, agent_deadline_s=5), transaction=repo.get_transaction("TXN-L2-2041"))
+
+    assert len(gateway.calls) == 1
+    assert events[-1]["incident"]["verdict"]["verdict"] == "INCONCLUSIVE"
+
+
+def test_gemini_3_gets_low_thinking_and_older_models_keep_defaults(repo, settings):
+    for model, expect in (("gemini-3.5-flash-lite", "LOW"), ("gemini-2.5-flash-lite", None)):
+        gateway = FakeGateway([text(verdict_json())])
+        run(repo, gateway, replace(settings, investigator_model=model), transaction=repo.get_transaction("TXN-L2-2041"))
+        thinking = gateway.calls[0][2].thinking_config
+        assert (thinking.thinking_level.name if thinking else None) == expect
+
+
+# ---------- inputs: hints, stills, close-ups, big clips ----------
+def test_tier1_hints_reach_the_prompt(repo, settings):
+    gateway = FakeGateway([text(verdict_json(verdict="BENIGN", seen_items=[], items_seen=0, items_scanned=0))])
+
+    events = run(repo, gateway, settings, camera_id="cam-aisle-2", tier1_events=[{
+        "t": "00:01.2", "kind": "CONCEALMENT", "score": 0.7, "detail": "wrist to pocket",
+        "camera_id": "cam-aisle-2", "trigger": "hot_score", "confidence": 0.66, "box": [120, 80, 900, 420],
+    }])
 
     prompt = str(gateway.calls[0][1])
     assert events[-1]["type"] == "result"
-    assert "wrist to pocket" in prompt
-    assert "trigger hot_score" in prompt
-    assert "confidence 0.66" in prompt
-    assert "camera cam-aisle-2" in prompt
-    assert "box [120, 80, 900, 420]" in prompt
+    for expected in ("wrist to pocket", "trigger hot_score", "confidence 0.66", "camera cam-aisle-2",
+                     "box [120, 80, 900, 420]"):
+        assert expected in prompt
 
 
-def test_marked_stills_are_sent_ahead_of_the_clip(repo, settings):
-    gateway = FakeGateway([text("notes"), text(verdict_json(verdict="CONCEALMENT"))])
+def test_stills_and_close_ups_are_sent_ahead_of_the_clip(repo, settings):
+    gateway = FakeGateway([text(verdict_json())])
     jpeg = b"\xff\xd8\xff\xd9"
-    events = list(investigate(
-        CLIP, "video/webm", camera(repo, "cam-aisle-4"), None, repo, gateway, settings,
-        stills=[("before", jpeg), ("reach", jpeg), ("hold", jpeg), ("after", jpeg)],
-    ))
+    labels = ["before", "reach", "hold", "after", "pickup_start", "bagging_end"]
+
+    events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"),
+                 stills=[(label, jpeg) for label in labels])
 
     assert events[-1]["type"] == "result"
-    texts = [part.text for part in gateway.calls[0][1][0].parts if part.text]
-    images = [p for p in gateway.calls[0][1][0].parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
+    parts = gateway.calls[0][1][0].parts
+    texts = [p.text for p in parts if p.text]
+    image_positions = [i for i, p in enumerate(parts) if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
+    video_position = next(i for i, p in enumerate(parts) if p.inline_data and p.inline_data.mime_type == "video/webm")
+    assert len(image_positions) == 6
     assert "Still: before" in texts
-    assert "Still: after" in texts
-    assert len(images) == 4
-    verdict_images = [
-        p for p in gateway.calls[-1][1][0].parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"
-    ]
-    assert len(verdict_images) == 4
+    assert any(t.startswith("Close-up: the item pile at the start") for t in texts)
+    assert video_position > max(image_positions)
 
 
-def test_metadata_rejection_retries_plain_clip_in_both_passes(repo, settings):
-    gateway = FakeGateway([GeminiUnavailable("bad video metadata", 400), text("notes"), text(verdict_json())])
+def test_starting_inventory_larger_than_items_listed_triggers_one_recheck(repo, settings):
+    short = verdict_json(starting_items=["milk", "bread", "wine", "chips", "flower"])
+    gateway = FakeGateway([text(short), text(verdict_json(starting_items=["milk", "bread", "wine", "chips"]))])
 
-    events = run(repo, gateway, settings)
+    events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
 
-    assert events[-1]["type"] == "result"
-    verdict_model, verdict_contents, verdict_config = gateway.calls[-1]
-    videos = [p for p in verdict_contents[0].parts if p.inline_data and p.inline_data.mime_type == "video/webm"]
-    assert videos and all(p.video_metadata is None for p in videos)
-    assert verdict_config.media_resolution is None
-
-
-def test_normalise_mime():
-    assert normalise_mime("video/webm;codecs=vp9") == "video/webm"
-    assert normalise_mime("video/quicktime") == "video/mov"
-    assert normalise_mime("image/png") is None
+    assert len(gateway.calls) == 2
+    assert "5 items in the item pile" in gateway.calls[1][1][-1].parts[0].text
+    assert events[-1]["incident"]["verdict"]["starting_items"] == ["milk", "bread", "wine", "chips"]
 
 
 def test_large_clip_goes_through_files_api_and_is_deleted(repo, settings):
-    from dataclasses import replace
+    gateway = FakeGateway([text(verdict_json())])
 
-    small_inline = replace(settings, inline_clip_bytes=4)
-    gateway = FakeGateway([text("notes"), text(verdict_json())])
-
-    events = run(repo, gateway, small_inline)
+    events = run(repo, gateway, replace(settings, inline_clip_bytes=4), transaction=repo.get_transaction("TXN-L2-2041"))
 
     assert events[-1]["type"] == "result"
-    assert [e["step"] for e in events if e["type"] == "progress"][0] == "upload"
-    first_video = gateway.calls[0][1][0].parts[0]
-    assert first_video.file_data.file_uri == "https://files.test/1" and first_video.inline_data is None
+    assert "upload" in steps(events)
+    video = gateway.calls[0][1][0].parts[0]
+    assert video.file_data.file_uri == "https://files.test/1" and video.inline_data is None
     assert gateway.uploads == [(len(CLIP), "video/webm")]
     assert gateway.deleted == ["files/test-1"]
 
 
 def test_uploaded_clip_is_deleted_even_when_gemini_fails(repo, settings):
-    from dataclasses import replace
-
     gateway = FakeGateway([GeminiUnavailable("quota reached", 429)])
 
     events = run(repo, gateway, replace(settings, inline_clip_bytes=4))
 
     assert events[-1]["type"] == "error"
     assert gateway.deleted == ["files/test-1"]
+
+
+def test_normalise_mime():
+    assert normalise_mime("video/webm;codecs=vp9") == "video/webm"
+    assert normalise_mime("video/quicktime") == "video/mov"
+    assert normalise_mime("image/png") is None

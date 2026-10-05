@@ -20,21 +20,23 @@ from .models import (
     Zone,
 )
 
-SEED_VERSION = "2026-10-04.1"
+SEED_VERSION = "2026-10-06.1"
 STORE_NAME = "Demo Mart (synthetic)"
 
 CAMERAS = [
     Camera(id="cam-sco-1", name="Self-checkout · Lane 1", kind="checkout", lane_id="L1",
-           zone_ids=["z-scan-1", "z-bag-1"]),
+           zone_ids=["z-pick-1", "z-scan-1", "z-bag-1"]),
     Camera(id="cam-sco-2", name="Self-checkout · Lane 2", kind="checkout", lane_id="L2",
-           zone_ids=["z-scan-2", "z-bag-2"]),
+           zone_ids=["z-pick-2", "z-scan-2", "z-bag-2"]),
     Camera(id="cam-aisle-4", name="Aisle 4 · Spirits", kind="floor", zone_ids=["z-spirits"]),
     Camera(id="cam-aisle-2", name="Aisle 2 · Snacks", kind="floor", zone_ids=["z-snacks", "z-exit"]),
 ]
 
 ZONES = [
+    Zone(id="z-pick-1", name="Item pile · Lane 1", camera_id="cam-sco-1", kind="pickup"),
     Zone(id="z-scan-1", name="Scanner · Lane 1", camera_id="cam-sco-1", kind="scanner"),
     Zone(id="z-bag-1", name="Bagging area · Lane 1", camera_id="cam-sco-1", kind="bagging"),
+    Zone(id="z-pick-2", name="Item pile · Lane 2", camera_id="cam-sco-2", kind="pickup"),
     Zone(id="z-scan-2", name="Scanner · Lane 2", camera_id="cam-sco-2", kind="scanner"),
     Zone(id="z-bag-2", name="Bagging area · Lane 2", camera_id="cam-sco-2", kind="bagging"),
     Zone(id="z-spirits", name="Spirits shelf", camera_id="cam-aisle-4", kind="shelf", high_value=True),

@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 CameraKind = Literal["checkout", "floor"]
-ZoneKind = Literal["scanner", "bagging", "shelf", "exit"]
+ZoneKind = Literal["pickup", "scanner", "bagging", "shelf", "exit"]
 VerdictKind = Literal["SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH", "BENIGN", "INCONCLUSIVE"]
 IncidentStatus = Literal["NEEDS_REVIEW", "REJECTED", "RESOLVED_CONFIRMED", "RESOLVED_DISMISSED"]
 RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BYPASS"]
@@ -86,6 +86,10 @@ class VerdictOut(BaseModel):
     confidence: float = Field(ge=0, le=1)
     items_seen: int = Field(ge=0)
     items_scanned: int = Field(ge=0)
+    starting_items: list[str] = Field(
+        default_factory=list,
+        description="Every item visible in the item pile / pickup area at the start, before any scanning",
+    )
     seen_items: list[SeenItem] = []
     timeline: list[TimelineEvent] = []
     reason: str = Field(description="One or two plain sentences describing actions only")
@@ -130,6 +134,8 @@ class Incident(BaseModel):
     tool_calls: list[ToolCallLog] = []
     reviewed_at: str | None = None
     zones_used: list["ZoneHint"] = []
+    # Where the time went, in ms: lookup, upload, watch, recheck, total
+    timings: dict[str, int] = {}
 
 
 # ---------- Camera zone layouts (where the scanner etc. are in the picture) ----------
