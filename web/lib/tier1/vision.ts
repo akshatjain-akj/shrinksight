@@ -35,6 +35,10 @@ export async function loadVision(): Promise<VisionModels> {
       baseOptions: { ...base, modelAssetPath: POSE, delegate },
       runningMode: "VIDEO",
       numPoses: 3,
+      // Fewer "ghost" people in cluttered aisles, and earlier re-detection when hands move fast.
+      minPoseDetectionConfidence: 0.6,
+      minPosePresenceConfidence: 0.6,
+      minTrackingConfidence: 0.65,
     }),
   );
   const face = await withDelegate((delegate) =>
@@ -48,8 +52,8 @@ export async function loadVision(): Promise<VisionModels> {
     vision.ObjectDetector.createFromOptions(fileset, {
       baseOptions: { ...base, modelAssetPath: OBJECTS, delegate },
       runningMode: "VIDEO",
-      scoreThreshold: 0.4,
-      maxResults: 4,
+      scoreThreshold: 0.45,
+      maxResults: 5,
     }),
   );
   return {

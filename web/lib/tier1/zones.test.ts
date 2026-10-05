@@ -43,3 +43,19 @@ test("suggestions update found zones and keep the rest", () => {
   assert.deepEqual(out.shapes[1].polygon, shapes[1].polygon);
   assert.equal(out.descriptions["z-scan-1"], "paper square");
 });
+
+test("action crop covers the zones with a margin, or nothing when it would keep most of the frame", async () => {
+  const { actionCrop, rectToBox } = await import("./zones.ts");
+  const counter = [
+    { id: "z-scan-1", name: "Scanner", kind: "scanner", polygon: rect(0.3, 0.4, 0.1, 0.1) },
+    { id: "z-bag-1", name: "Bagging", kind: "bagging", polygon: rect(0.45, 0.4, 0.1, 0.15) },
+  ];
+  const crop = actionCrop(counter);
+  assert.ok(crop, "a small counter area should be cropped");
+  assert.ok(crop.x < 0.3 && crop.x + crop.w > 0.55 && crop.y < 0.4 && crop.y + crop.h > 0.55);
+  assert.equal(actionCrop(shapes), null, "zones already covering most of the frame: no crop");
+  assert.deepEqual(rectToBox({ x: 0.1, y: 0.2, w: 0.5, h: 0.4 }), [200, 100, 600, 600]);
+  const whole = [{ id: "big", name: "Big", kind: "shelf", polygon: rect(0.05, 0.05, 0.9, 0.9) }];
+  assert.equal(actionCrop(whole), null);
+  assert.equal(actionCrop([]), null);
+});

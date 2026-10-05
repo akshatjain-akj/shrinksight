@@ -57,6 +57,10 @@ export interface SeenItem {
   inventory_id?: number | null;
   /** Where the item finished up. */
   ended_in?: "bag" | "hand_or_pocket" | "pile" | "put_back" | "unclear";
+  /** Chain of custody, clip timestamps. */
+  picked_up_at?: string | null;
+  scanner_at?: string | null;
+  ended_at?: string | null;
 }
 
 export interface TimelineEvent {
@@ -129,6 +133,7 @@ export interface Incident {
   /** The server's receipt check: why it was rejected, or why Gemini's verdict was overridden. */
   receipt_check?: string | null;
   overridden?: boolean;
+  video_crop?: number[] | null;
 }
 
 export interface InventoryItem {

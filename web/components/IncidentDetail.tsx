@@ -248,6 +248,17 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                               .join(" · ")}
                           </span>
                         ) : null}
+                        {(item.picked_up_at || item.scanner_at || item.ended_at) && (
+                          <span className="seen-meta">
+                            {[
+                              item.picked_up_at ? `picked up ${item.picked_up_at}` : null,
+                              item.scanner_at ? `scanner ${item.scanner_at}` : "never at the scanner",
+                              item.ended_at ? `${item.ended_in && item.ended_in !== "unclear" ? ENDED_TEXT[item.ended_in] : "ended"} ${item.ended_at}` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" → ")}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}

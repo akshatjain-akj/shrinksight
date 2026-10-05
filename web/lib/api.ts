@@ -129,6 +129,8 @@ export interface InvestigateMeta {
   clip_seconds?: number;
   /** The confirmed item-pile list; Gemini tracks each # item. */
   inventory?: InventoryItem[];
+  /** The part of the frame the video was cropped to, [ymin, xmin, ymax, xmax] 0–1000. */
+  video_crop?: number[];
   transaction_id?: string;
   receipt?: ReceiptLine[];
   tier1_events?: {

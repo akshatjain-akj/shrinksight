@@ -111,3 +111,37 @@ export function drawZoneOutlines(
   }
   ctx.restore();
 }
+
+/** A normalised rectangle (0–1). */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * The part of the frame worth sending: the marked zones plus a 30% margin. Returns null when there are no zones or
+ * the crop would keep most of the frame anyway (then cropping gains nothing).
+ */
+export function actionCrop(zones: ZoneShape[], padding = 0.3, maxArea = 0.7): Rect | null {
+  const points = zones.flatMap((z) => z.polygon);
+  if (!points.length) return null;
+  const minX = Math.min(...points.map((p) => p.x));
+  const maxX = Math.max(...points.map((p) => p.x));
+  const minY = Math.min(...points.map((p) => p.y));
+  const maxY = Math.max(...points.map((p) => p.y));
+  const padX = (maxX - minX) * padding;
+  const padY = (maxY - minY) * padding;
+  const x = clamp01(minX - padX);
+  const y = clamp01(minY - padY);
+  const w = clamp01(maxX + padX) - x;
+  const h = clamp01(maxY + padY) - y;
+  if (w * h > maxArea || w < 0.05 || h < 0.05) return null;
+  return { x: round3(x), y: round3(y), w: round3(w), h: round3(h) };
+}
+
+/** [ymin, xmin, ymax, xmax] on Gemini's 0–1000 grid. */
+export function rectToBox(r: Rect): [number, number, number, number] {
+  return [Math.round(r.y * 1000), Math.round(r.x * 1000), Math.round((r.y + r.h) * 1000), Math.round((r.x + r.w) * 1000)];
+}

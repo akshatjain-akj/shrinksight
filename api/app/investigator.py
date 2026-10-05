@@ -40,10 +40,10 @@ from .models import (
 )
 from .reconcile import apply_receipt_rule, confirmed_list_text, receipt_lines_text, reconcile
 from .repo import Repo, match_sku
-from .zones import zones_context
+from .zones import from_crop, zones_context
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-09.ended-in"
+PROMPT_VERSION = "2026-10-10.crop-custody"
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
@@ -96,8 +96,19 @@ Method for a self-checkout (receipt first):
    moved), put_back, or unclear. Also note its path relative to the scanner zone (location); "never_near_scanner"
    means the item moved to the bag or the shopper WITHOUT passing the scanner, not that it stayed still.
    The scanner may be a real scanner or a marked area (paper, tape, a box); use the marked zones when given.
-4. Never answer BENIGN if an item that is not on the receipt ended in the bag or with the shopper; that is
+4. Chain of custody: for each item give picked_up_at, scanner_at (null if it never reached the scanner) and
+   ended_at, as clip timestamps. Base every conclusion on these observed moments.
+5. Never answer BENIGN if an item that is not on the receipt ended in the bag or with the shopper; that is
    SCAN_AVOIDANCE. BENIGN means every item matched the receipt, or stayed in the pile, or was put back.
+
+Object provenance (decides personal vs. store items):
+- An object that comes out of the shopper's own clothing or bag and goes back there is a personal item (phone,
+  wallet, keys): BENIGN.
+- An object that comes from a store shelf, the item pile or the counter and goes into clothing or a personal bag
+  without being paid is a store item: CONCEALMENT or SCAN_AVOIDANCE.
+Benign look-alikes (not theft): sliding a phone into a back pocket; rotating an item and scanning it again after
+a failed read; pulling stuck plastic bags apart at the bagging area; reading a label near a pocket and putting the
+item back; putting down a personal bag brought into the store.
 
 Method for the shop floor: watch where picked-up items go, using the zone policy provided.
 - A person lying flat on the floor is a health hazard, not a theft. Use RULE_BREACH and say they are down.
@@ -195,14 +206,18 @@ def cache_key(
 
 
 def _context_text(
-    camera: Camera, repo: Repo, tier1_events: list[dict] | None = None, hints: list[ZoneHint] | None = None
+    camera: Camera,
+    repo: Repo,
+    tier1_events: list[dict] | None = None,
+    hints: list[ZoneHint] | None = None,
+    crop: list[int] | None = None,
 ) -> str:
     all_zones = repo.zones()
     zones = [z for z in all_zones if z.id in camera.zone_ids]
     zone_lines = "\n".join(f"- {z.id}: {z.name} ({z.kind})" for z in zones)
     lane = f"Lane id: {camera.lane_id}\n" if camera.lane_id else ""
     text = f"Camera: {camera.name} ({camera.kind})\n{lane}Zones in view:\n{zone_lines}"
-    marked = zones_context(hints or [], all_zones)
+    marked = zones_context(hints or [], all_zones, crop)
     if marked:
         text += "\n\n" + marked
     if not tier1_events:
@@ -353,6 +368,7 @@ def investigate(
     zones: list[ZoneHint] | None = None,
     clip_seconds: float | None = None,
     inventory: list[InventoryItem] | None = None,
+    video_crop: list[int] | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event."""
     started = time.monotonic()
@@ -362,7 +378,7 @@ def investigate(
     long_clip = clip_seconds is not None and clip_seconds > settings.long_clip_seconds
     fps = settings.long_clip_fps if long_clip else settings.clip_fps
     confirmed = inventory or []
-    variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps([i.description for i in confirmed])
+    variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps([[i.description for i in confirmed], video_crop])
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
     cached = repo.cache_get(key)
@@ -388,7 +404,7 @@ def investigate(
             tool_log.append(ToolCallLog(name=name, args=args))
             tool_results.append({"tool": name, "args": args, "result": toolbox.run(name, args)})
         receipt = _receipt_lines(transaction, tool_results) if camera.kind == "checkout" else []
-        context = _context_text(camera, repo, tier1_events, zones)
+        context = _context_text(camera, repo, tier1_events, zones, video_crop)
         marked = _still_parts(types, stills or [])
         marked_plain = _still_parts(types, stills or [], plain=True)
         timings["lookup_ms"] = _ms(step)
@@ -476,6 +492,11 @@ def investigate(
         else:
             verdict = chosen
 
+        # Boxes Gemini drew on the cropped video, mapped back onto the full camera view for the evidence overlay.
+        if video_crop:
+            for item in verdict.seen_items:
+                item.box_2d = from_crop(item.box_2d, video_crop)
+
         # ---- 5. Receipt-check safety rule: Gemini can clear an alert only when the receipt agrees ----
         receipt_note, overridden = None, False
         if camera.kind == "checkout" and receipt:
@@ -485,6 +506,7 @@ def investigate(
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
         incident.receipt_check = receipt_note
         incident.overridden = overridden
+        incident.video_crop = video_crop
         incident.zones_used = zones
         timings["total_ms"] = _ms(started)
         incident.timings = timings

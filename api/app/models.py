@@ -81,6 +81,9 @@ class SeenItem(BaseModel):
     inventory_id: int | None = Field(
         default=None, description="The # of this item in the confirmed item list, or null for an extra item"
     )
+    picked_up_at: str | None = Field(default=None, description="When the item was picked up (mm:ss.s), or null")
+    scanner_at: str | None = Field(default=None, description="When it was at the scanner zone (mm:ss.s), or null")
+    ended_at: str | None = Field(default=None, description="When it reached where it finished (mm:ss.s), or null")
     ended_in: EndedIn = Field(
         default="unclear",
         description="Where the item finished: bag, hand_or_pocket (kept by the shopper), pile (never moved), "
@@ -166,6 +169,9 @@ class Incident(BaseModel):
     # The server's receipt check: why it was rejected, or why Gemini's verdict was overridden
     receipt_check: str | None = None
     overridden: bool = False
+    # The part of the camera view the uploaded video was cropped to, [ymin, xmin, ymax, xmax] 0-1000; boxes on this
+    # incident are already mapped back to the full view.
+    video_crop: list[int] | None = None
 
 
 # ---------- Camera zone layouts (where the scanner etc. are in the picture) ----------
