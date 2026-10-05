@@ -239,3 +239,21 @@ export async function numberedPile(base: HTMLCanvasElement, items: { box_2d: num
 export function canvasToJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
   return toJpeg(canvas, 0.85);
 }
+
+/**
+ * A photo of the scanning device, shrunk to at most 640 px on the long side as a JPEG (~30–80 KB). Low-quality phone
+ * shots are fine: Gemini only needs to recognise the device.
+ */
+export async function scannerPhotoJpeg(file: Blob, maxSide = 640): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return await toJpeg(canvas, 0.8);
+  } finally {
+    bitmap.close();
+  }
+}

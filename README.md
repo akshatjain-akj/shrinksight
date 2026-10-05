@@ -79,6 +79,16 @@ erDiagram
   INCIDENT ||--o| CACHE : incident_id
 ```
 
+## Learning from the store
+- **Camera memory:** when staff confirm or dismiss an alert, they pick a reason. The newest few decisions per camera go
+  into later Gemini prompts as short examples, so a repeat of a dismissed situation is recognised ("like the 2 Oct
+  personal phone case"). The till receipt check always has the final say.
+- **Self-calibrating edge gate:** if most edge alerts on a camera turn out to be false alarms, the browser gate gets one
+  step stricter, live via Firestore `onSnapshot`, with an explanation and Undo.
+- **Scanner reference photo:** an optional photo of a checkout's scanner (per camera, or per uploaded clip) so only
+  passes over that device count as scans.
+- **Token log:** tokens per investigation on the incident page and in the eval report.
+
 - **Plan:** [`docs/PLAN.md`](docs/PLAN.md) · **Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   **Setup & deployment:** [`docs/SETUP_AND_DEPLOYMENT.md`](docs/SETUP_AND_DEPLOYMENT.md) ·
   **New teammate?** [`docs/TEAMMATE_SETUP.md`](docs/TEAMMATE_SETUP.md)

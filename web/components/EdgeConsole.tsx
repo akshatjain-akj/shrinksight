@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, investigateStream } from "@/lib/api";
-import { useRules, useStore } from "@/lib/hooks";
+import { toTuning, useEdgeConfig, useRules, useStore } from "@/lib/hooks";
 import type { Tier1Hit } from "@/lib/tier1/engine.ts";
 import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { drawZoneOutlines, shapesToHints } from "@/lib/tier1/zones";
@@ -16,6 +16,7 @@ import { PoseSmoother } from "@/lib/tier1/oneEuro.ts";
 import { pickFour, type TimedStill } from "@/lib/tier1/stills.ts";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision.ts";
 import type { Camera } from "@/lib/types";
+import EdgeTuningBanner from "./EdgeTuningBanner";
 import { ErrorNotice, Skeletons } from "./ui";
 
 const W = 640;
@@ -193,6 +194,15 @@ export default function EdgeConsole() {
   const stillCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const camera = store?.cameras.find((c) => c.id === cameraId) ?? store?.cameras[0];
+  // The camera's auto-tuned gate, live from Firestore. Applied to every tracked person as soon as it changes.
+  const { config: edgeConfig, setConfig: setEdgeConfig } = useEdgeConfig(camera?.id);
+  const tuningRef = useRef(toTuning(null));
+  const gate = toTuning(edgeConfig);
+
+  useEffect(() => {
+    tuningRef.current = toTuning(edgeConfig);
+    trackerRef.current?.setTuning(tuningRef.current);
+  }, [edgeConfig]);
 
   /** Zones that were burned into this clip, so Gemini also gets them as exact coordinates. */
   const zoneMeta = () =>
@@ -248,6 +258,7 @@ export default function EdgeConsole() {
     // Engines are created per tracked person, so reading zonesRef here picks up synced layouts too.
     const tracker = new PersonTracker(() => new Tier1Engine(camera.kind, zonesRef.current, rules ?? []));
     tracker.setLaneLeave(checkTillRef.current && camera.kind === "checkout");
+    tracker.setTuning(tuningRef.current);
     trackerRef.current = tracker;
     return () => {
       current = false;
@@ -435,7 +446,7 @@ export default function EdgeConsole() {
           hotFrames: tick.hotFrames,
           dwell: tick.dwellSeconds,
           fps: fpsMarks.length,
-          detail: tick.reason || (tick.smoothed >= 0.4 ? "Score is high" : lastPoses.length ? "Watching" : "Waiting for a person"),
+          detail: tick.reason || (tick.smoothed >= tuningRef.current.sendScore ? "Score is high" : lastPoses.length ? "Watching" : "Waiting for a person"),
         }));
       } else if (frame % 8 === 0) {
         setStatus((s) => ({ ...s, fps: fpsMarks.length }));
@@ -475,7 +486,7 @@ export default function EdgeConsole() {
       try {
         await investigateStream(
           blob,
-          { camera_id: camera.id, tier1_events: payload.hits, ...zoneMeta() },
+          { camera_id: camera.id, tier1_events: payload.hits, origin: fromFileRef.current ? "upload" : "edge", ...zoneMeta() },
           (event) => {
             if (event.type === "result") {
               holdScoreRef.current = false;
@@ -663,7 +674,12 @@ export default function EdgeConsole() {
     setStatus((s) => ({ ...s, detail: "Gemini is reviewing the blurred clip" }));
     void investigateStream(
       blob,
-      { camera_id: camera?.id ?? cameraId, tier1_events: payload.hits, ...zoneMeta() },
+      {
+        camera_id: camera?.id ?? cameraId,
+        tier1_events: payload.hits,
+        origin: fromFileRef.current ? "upload" : "edge",
+        ...zoneMeta(),
+      },
       (event) => {
         if (event.type === "result") {
           holdScoreRef.current = false;
@@ -726,8 +742,13 @@ export default function EdgeConsole() {
             </label>
             <p className="edge-score" aria-live="polite">
               Score <strong>{status.smoothed.toFixed(2)}</strong>
-              <span className="muted small"> · {status.hotFrames}/8 hot frames · {status.detail}</span>
+              <span className="muted small"> · {status.hotFrames}/{gate.hotFrames} hot frames · {status.detail}</span>
             </p>
+            <span className="muted small">
+              Gate: score ≥ {gate.sendScore.toFixed(2)} for {gate.hotFrames} frames
+              {edgeConfig?.level ? ` · auto-tuned (level ${edgeConfig.level})` : " · default"}
+            </span>
+            <EdgeTuningBanner config={edgeConfig} onChange={setEdgeConfig} />
             <div className="row">
               <span className="chip">{status.fps} fps</span>
               <span className="chip tone-success">{status.sent} sent</span>

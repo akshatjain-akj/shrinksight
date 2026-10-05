@@ -10,7 +10,7 @@ import time
 from typing import Any, Protocol
 
 from . import seed
-from .models import Camera, CameraLayout, Incident, Rule, Sku, Transaction, Zone
+from .models import Camera, CameraLayout, EdgeConfig, Feedback, Incident, Rule, Sku, Transaction, Zone
 
 
 class Repo(Protocol):
@@ -33,6 +33,14 @@ class Repo(Protocol):
     def layouts(self) -> dict[str, CameraLayout]: ...
     def get_layout(self, camera_id: str) -> CameraLayout | None: ...
     def save_layout(self, layout: CameraLayout) -> None: ...
+    def feedback(self, camera_id: str) -> list[Feedback]: ...
+    def save_feedback(self, item: Feedback) -> None: ...
+    def get_edge_config(self, camera_id: str) -> EdgeConfig | None: ...
+    def save_edge_config(self, config: EdgeConfig) -> None: ...
+    def scanner_photos(self) -> dict[str, str]: ...
+    def get_scanner_photo(self, camera_id: str) -> tuple[bytes, str] | None: ...
+    def save_scanner_photo(self, camera_id: str, data: bytes, updated_at: str) -> None: ...
+    def delete_scanner_photo(self, camera_id: str) -> None: ...
 
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -65,6 +73,7 @@ def _seed_documents() -> dict[str, dict[str, dict]]:
         "transactions": {t.id: t.model_dump() for t in seed.TRANSACTIONS},
         "incidents": {i.id: i.model_dump() for i in seed.INCIDENTS},
         "rules": {r.id: r.model_dump() for r in seed.RULES},
+        "feedback": {f.incident_id: f.model_dump() for f in seed.FEEDBACK},
     }
 
 
@@ -153,6 +162,35 @@ class MemoryRepo:
 
     def save_layout(self, layout: CameraLayout) -> None:
         self._put("layouts", layout.camera_id, layout.model_dump())
+
+    # ---- manager feedback, edge gate, scanner photos ----
+    def feedback(self, camera_id: str) -> list[Feedback]:
+        items = [Feedback(**d) for d in self._all("feedback") if d.get("camera_id") == camera_id]
+        return sorted(items, key=lambda f: f.reviewed_at, reverse=True)
+
+    def save_feedback(self, item: Feedback) -> None:
+        self._put("feedback", item.incident_id, item.model_dump())
+
+    def get_edge_config(self, camera_id: str) -> EdgeConfig | None:
+        doc = self._get("edge_config", camera_id)
+        return EdgeConfig(**doc) if doc else None
+
+    def save_edge_config(self, config: EdgeConfig) -> None:
+        self._put("edge_config", config.camera_id, config.model_dump())
+
+    def scanner_photos(self) -> dict[str, str]:
+        return {d["camera_id"]: d["updated_at"] for d in self._all("scanner_photos")}
+
+    def get_scanner_photo(self, camera_id: str) -> tuple[bytes, str] | None:
+        doc = self._get("scanner_photos", camera_id)
+        return (bytes(doc["data"]), doc["updated_at"]) if doc else None
+
+    def save_scanner_photo(self, camera_id: str, data: bytes, updated_at: str) -> None:
+        self._put("scanner_photos", camera_id, {"camera_id": camera_id, "data": data, "updated_at": updated_at})
+
+    def delete_scanner_photo(self, camera_id: str) -> None:
+        with self._lock:
+            self._data.get("scanner_photos", {}).pop(camera_id, None)
 
 
 class FirestoreRepo:
@@ -257,3 +295,35 @@ class FirestoreRepo:
 
     def save_layout(self, layout: CameraLayout) -> None:
         self._put("layouts", layout.camera_id, layout.model_dump())
+
+    # ---- manager feedback, edge gate, scanner photos ----
+    def feedback(self, camera_id: str) -> list[Feedback]:
+        # A single-field filter needs no composite index; there are only a few decisions per camera.
+        query = self._db.collection("feedback").where(filter=self._fs.FieldFilter("camera_id", "==", camera_id))
+        items = [Feedback(**d.to_dict()) for d in query.stream()]
+        return sorted(items, key=lambda f: f.reviewed_at, reverse=True)
+
+    def save_feedback(self, item: Feedback) -> None:
+        self._put("feedback", item.incident_id, item.model_dump())
+
+    def get_edge_config(self, camera_id: str) -> EdgeConfig | None:
+        doc = self._get("edge_config", camera_id)
+        return EdgeConfig(**doc) if doc else None
+
+    def save_edge_config(self, config: EdgeConfig) -> None:
+        self._put("edge_config", config.camera_id, config.model_dump())
+
+    def scanner_photos(self) -> dict[str, str]:
+        # Only the timestamps: the photo bytes are read one camera at a time.
+        docs = self._db.collection("scanner_photos").select(["camera_id", "updated_at"]).stream()
+        return {d.get("camera_id"): d.get("updated_at") for d in docs}
+
+    def get_scanner_photo(self, camera_id: str) -> tuple[bytes, str] | None:
+        doc = self._get("scanner_photos", camera_id)
+        return (bytes(doc["data"]), doc["updated_at"]) if doc else None
+
+    def save_scanner_photo(self, camera_id: str, data: bytes, updated_at: str) -> None:
+        self._put("scanner_photos", camera_id, {"camera_id": camera_id, "data": data, "updated_at": updated_at})
+
+    def delete_scanner_photo(self, camera_id: str) -> None:
+        self._db.collection("scanner_photos").document(camera_id).delete()

@@ -33,7 +33,7 @@ Uploaded files skip the live score gate and still go to Gemini when playback end
 
 ## Built store
 
-Deployed Cloud Run uses `FirestoreRepo`. Local runs and tests use `MemoryRepo` with the same collections. Seed writes `cameras`, `zones`, `skus`, `transactions`, `incidents`, and `rules` once, tracked by `meta/seed`. `counters` hold daily rate limits. The browser reads incidents and rules live from Firestore after anonymous sign-in.
+Deployed Cloud Run uses `FirestoreRepo`. Local runs and tests use `MemoryRepo` with the same collections. Seed writes `cameras`, `zones`, `skus`, `transactions`, `incidents`, `rules` and `feedback` once, tracked by `meta/seed`. `edge_config` (browser-readable) and `scanner_photos` (server-only) are written at runtime. `counters` hold daily rate limits. The browser reads incidents and rules live from Firestore after anonymous sign-in.
 
 ```mermaid
 erDiagram
@@ -82,6 +82,35 @@ erDiagram
     string incident_id
   }
 ```
+
+## Built feedback loops
+
+Two loops make ShrinkSight better at a store's own normal behaviour, with no retraining and no extra Gemini requests.
+
+```mermaid
+flowchart LR
+  review[Staff confirm or dismiss, with a reason] --> fb[(feedback per camera)]
+  fb -->|latest 3 dismissals + 2 confirmations, as text| prompt[Next investigation prompt on that camera]
+  prompt --> gemini[Gemini verdict + similar_past_case]
+  gemini --> rule[Receipt check still decides what was paid]
+  edgeAlert[Edge alert investigated or reviewed] --> tune{Most of the last 8–10 edge alerts false?}
+  tune -->|yes, no near-miss theft| cfg[(edge_config per camera)]
+  tune -->|nearly all real| cfg
+  cfg -->|Firestore onSnapshot| browser[Live edge and Monitor apply the new gate live]
+```
+
+- **Camera memory** (`api/app/memory.py`): each review saves a `feedback/{incident}` record (decision, reason, note, what
+  Gemini had said). Investigations on the same camera get the newest few as a short briefing section (~400 tokens).
+  The memory version is part of the cache key. It is context, never a rule: the deterministic receipt check runs after
+  Gemini, so a past dismissal can't clear an unpaid item that went into the bag. `MEMORY_EXAMPLES=0` turns it off.
+- **Self-calibrating edge gate** (`api/app/edge_tuning.py`): fixed levels (score 0.40→0.55, hot frames 8→15, hide hold
+  +0→900 ms). ≥70% false alarms over the last `EDGE_TUNE_MIN_ALERTS` (default 8) edge alerts raises it one level; ≤20%
+  relaxes it. A confirmed theft that scored close to the stricter bar blocks the raise. Each change starts a fresh
+  window, is explained in a banner, and can be undone.
+- **Scanner reference photo**: one JPEG per camera (`scanner_photos/{camera}`, server-only, ~640 px), or one uploaded
+  with a clip. It goes into the same Gemini request at medium detail.
+- **Token log**: every Gemini response's token counts are summed per incident (`usage`, plus `inventory_usage`) and shown
+  on the incident page and in the eval table.
 
 ---
 

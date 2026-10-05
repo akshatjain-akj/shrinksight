@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { loadCameraConfigs, polygonsForCamera } from "@/lib/cameraConfig";
 import { personBox, type Pt } from "@/lib/tier1/geometry";
-import { Tier1Engine } from "@/lib/tier1/engine";
+import { DEFAULT_TUNING, Tier1Engine, type EdgeTuning } from "@/lib/tier1/engine";
 import { PersonTracker } from "@/lib/tier1/tracks";
 import { privacyBoxes } from "@/lib/tier1/privacy";
 import { PoseSmoother } from "@/lib/tier1/oneEuro";
@@ -116,6 +116,7 @@ export default function LiveScan({
   controls = false,
   loop = false,
   onScan,
+  tuning = DEFAULT_TUNING,
 }: {
   src: string;
   camera: Camera;
@@ -125,6 +126,8 @@ export default function LiveScan({
   /** Monitor keeps the aisle playing. Playback scans the clip once. */
   loop?: boolean;
   onScan?: (reading: ScanReading) => void;
+  /** The camera's auto-tuned gate (live from Firestore). */
+  tuning?: EdgeTuning;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -137,6 +140,13 @@ export default function LiveScan({
   cameraRef.current = camera;
   zonesRef.current = zones;
   rulesRef.current = rules;
+  const tuningRef = useRef(tuning);
+  const trackerRef = useRef<PersonTracker | null>(null);
+
+  useEffect(() => {
+    tuningRef.current = tuning;
+    trackerRef.current?.setTuning(tuning);
+  }, [tuning]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -154,6 +164,8 @@ export default function LiveScan({
     const active = cameraRef.current;
     const shapes = polygonsForCamera(active.id, zonesRef.current.filter((zone) => active.zone_ids.includes(zone.id)));
     const tracker = new PersonTracker(() => new Tier1Engine(active.kind, shapes, rulesRef.current));
+    tracker.setTuning(tuningRef.current);
+    trackerRef.current = tracker;
     let models: VisionModels | null = null;
     let alive = true;
     let raf = 0;

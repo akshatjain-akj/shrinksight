@@ -60,7 +60,7 @@ def test_inventory_falls_back_when_its_model_is_busy(repo, settings):
     gateway = FakeGateway([GeminiUnavailable("busy", 503), text(inventory_json())])
     settings = replace(settings, inventory_model="inventory-model", fallback_models=("backup-model",))
 
-    items, model, _ = take_inventory([("pile", JPEG)], camera(repo, "cam-sco-1"), gateway, settings, repo)
+    items, model, _, _ = take_inventory([("pile", JPEG)], camera(repo, "cam-sco-1"), gateway, settings, repo)
 
     assert model == "backup-model" and len(items) == 3
 

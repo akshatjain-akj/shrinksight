@@ -8,6 +8,8 @@ Flow (each step is streamed to the browser as a progress event):
   3. Receipt-first reconciliation. Only if the answer contradicts the receipt (or isn't valid JSON) and time
      allows, Gemini is asked once more. A remaining contradiction becomes INCONCLUSIVE, never a false alarm.
   4. Prices are added deterministically, the incident is saved and cached.
+Two optional extras ride along in the same request (no extra Gemini calls): the camera's memory (the manager's
+latest confirm/dismiss decisions, as text) and a reference photo of this store's scanning device.
 Everything runs inside a hard time budget (settings.agent_deadline_s) so it ends before Firebase Hosting's
 60 s limit; if time runs out after Gemini has answered, that answer is still used.
 """
@@ -22,15 +24,18 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from . import memory as camera_memory
 from .config import Settings
-from .gemini import FALLBACK_CODES, Gateway, GeminiUnavailable, model_chain, seconds_left, thinking_config
+from .gemini import FALLBACK_CODES, Gateway, GeminiUnavailable, add_usage, model_chain, seconds_left, thinking_config
 from .models import (
     LEFT_BEHIND,
     POSITIVE_VERDICTS,
     Camera,
+    Feedback,
     Incident,
     InventoryItem,
     ReceiptLine,
+    TokenUsage,
     ToolCallLog,
     Transaction,
     UnscannedItem,
@@ -47,7 +52,7 @@ BACKUP_MIN_SECONDS = 20
 RECHECK_MIN_SECONDS = 15
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-10.crop-custody"
+PROMPT_VERSION = "2026-10-05.memory-scanner-ref"
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
@@ -283,6 +288,24 @@ def _still_parts(types, stills: list[tuple[str, bytes]], plain: bool = False) ->
     return parts
 
 
+SCANNER_REF_TEXT = (
+    "Reference photo: this store's scanning device at this camera's checkout (it may be a real scanner or a marked "
+    "stand-in, and the photo may be low quality). An item counts as scanned only if it passes over THIS device or its "
+    "marked scanner zone. Passing an item over any other object (a phone, paper, the counter, an empty hand) is not a "
+    "scan, and neither is a gesture that never brings the item to the device."
+)
+
+
+def _scanner_ref_parts(types, photo: bytes | None, plain: bool = False) -> list:
+    if not photo:
+        return []
+    return [
+        types.Part.from_text(text=SCANNER_REF_TEXT),
+        types.Part(inline_data=types.Blob(data=photo, mime_type="image/jpeg"),
+                   media_resolution=_resolution(types, "MEDIUM", plain)),
+    ]
+
+
 def _lookups(camera: Camera) -> list[tuple[str, dict[str, Any]]]:
     """What the investigation always needs, fetched by the server instead of a Gemini tool round trip."""
     if camera.kind == "checkout":
@@ -296,8 +319,11 @@ def _briefing(
     tool_results: list[dict],
     camera: Camera,
     confirmed: list[InventoryItem] | None = None,
+    memory: str = "",
 ) -> str:
     parts = [context]
+    if memory:
+        parts.append(memory)
     if confirmed:
         parts.append(confirmed_list_text(confirmed))
     if camera.kind == "checkout":
@@ -375,8 +401,18 @@ def investigate(
     clip_seconds: float | None = None,
     inventory: list[InventoryItem] | None = None,
     video_crop: list[int] | None = None,
+    memory: list[Feedback] | None = None,
+    scanner_photo: bytes | None = None,
+    scanner_photo_source: str | None = None,
+    origin: str | None = None,
+    edge_confidence: float | None = None,
+    inventory_usage: TokenUsage | None = None,
 ) -> Iterator[dict]:
-    """Yields progress events, then exactly one `result` or `error` event."""
+    """Yields progress events, then exactly one `result` or `error` event.
+
+    `memory` is this camera's feedback (newest first); the latest few are added to the prompt. `scanner_photo` is a
+    JPEG of the store's scanning device, from this upload or the camera's saved photo (`scanner_photo_source`).
+    """
     started = time.monotonic()
     deadline = started + settings.agent_deadline_s
     models = model_chain(settings.investigator_model, settings.fallback_models)
@@ -384,7 +420,11 @@ def investigate(
     long_clip = clip_seconds is not None and clip_seconds > settings.long_clip_seconds
     fps = settings.long_clip_fps if long_clip else settings.clip_fps
     confirmed = inventory or []
-    variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps([[i.description for i in confirmed], video_crop])
+    remembered = camera_memory.pick(memory or [], settings.memory_examples)
+    photo_hash = hashlib.sha256(scanner_photo).hexdigest()[:16] if scanner_photo else ""
+    variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps(
+        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash]
+    )
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
     cached = repo.cache_get(key)
@@ -411,8 +451,12 @@ def investigate(
             tool_results.append({"tool": name, "args": args, "result": toolbox.run(name, args)})
         receipt = _receipt_lines(transaction, tool_results) if camera.kind == "checkout" else []
         context = _context_text(camera, repo, tier1_events, zones, video_crop)
-        marked = _still_parts(types, stills or [])
-        marked_plain = _still_parts(types, stills or [], plain=True)
+        marked = _scanner_ref_parts(types, scanner_photo) + _still_parts(types, stills or [])
+        marked_plain = [*_scanner_ref_parts(types, scanner_photo, plain=True),
+                        *_still_parts(types, stills or [], plain=True)]
+        if remembered:
+            yield _progress("memory", f"Using {len(remembered)} past decision{'s' if len(remembered) != 1 else ''} "
+                            "from this camera")
         timings["lookup_ms"] = _ms(step)
 
         # ---- 2. The clip: inline bytes, or the Files API for big clips ----
@@ -432,7 +476,7 @@ def investigate(
         )
         timings["upload_ms"] = _ms(step)
 
-        briefing = _briefing(context, receipt, tool_results, camera, confirmed)
+        briefing = _briefing(context, receipt, tool_results, camera, confirmed, camera_memory.memory_text(remembered))
 
         def contents_for(plain: bool) -> list:
             clip_part = plain_video if plain else video
@@ -456,6 +500,7 @@ def investigate(
         yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
         result, model, plain = yield from _watch(gateway, models, contents_for, config_for, deadline)
         timings["watch_ms"] = _ms(step)
+        usage = add_usage({}, result.usage)
         first, hard, soft, json_error = _parse(result.text, receipt, confirmed)
         chosen, chosen_hard = (first, hard) if first is not None else (None, [])
 
@@ -475,6 +520,7 @@ def investigate(
             follow_up.append(types.Content(role="user", parts=[types.Part.from_text(text=problem)]))
             try:
                 again = gateway.generate(model, follow_up, config_for(model, plain), deadline=deadline, retries=0)
+                usage = add_usage(usage, again.usage)
                 second, hard2, _, _ = _parse(again.text, receipt, confirmed)
                 if second is not None and (not hard2 or chosen is None or chosen_hard):
                     chosen, chosen_hard = second, hard2
@@ -509,6 +555,12 @@ def investigate(
         incident.overridden = overridden
         incident.video_crop = video_crop
         incident.zones_used = zones
+        incident.origin = origin
+        incident.edge_confidence = edge_confidence
+        incident.usage = TokenUsage(**usage) if usage else None
+        incident.inventory_usage = inventory_usage
+        incident.memory_used = camera_memory.refs(remembered)
+        incident.scanner_photo = scanner_photo_source if scanner_photo else None
         timings["total_ms"] = _ms(started)
         incident.timings = timings
         repo.save_incident(incident)

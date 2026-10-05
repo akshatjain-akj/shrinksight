@@ -17,6 +17,20 @@ EndedIn = Literal["bag", "hand_or_pocket", "pile", "put_back", "unclear"]
 TAKEN = {"bag", "hand_or_pocket"}
 LEFT_BEHIND = {"pile", "put_back"}
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
+# Why a manager dismissed or confirmed an alert. The reason becomes the camera's memory, not just the decision.
+DismissReason = Literal["personal_item", "rescan", "bagging", "staff", "camera", "other"]
+ConfirmReason = Literal["missed_scan", "concealed", "other"]
+REVIEW_REASON_TEXT = {
+    "personal_item": "personal item",
+    "rescan": "rescan after a failed read",
+    "bagging": "bagging gesture",
+    "staff": "staff action",
+    "camera": "camera or footage issue",
+    "missed_scan": "item not scanned",
+    "concealed": "item concealed",
+    "other": "other",
+}
+IncidentOrigin = Literal["edge", "upload"]
 
 POSITIVE_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -123,6 +137,11 @@ class VerdictOut(BaseModel):
     seen_items: list[SeenItem] = []
     timeline: list[TimelineEvent] = []
     reason: str = Field(description="One or two plain sentences describing actions only")
+    similar_past_case: str | None = Field(
+        default=None,
+        description="If one of this store's past review decisions in the briefing clearly resembles this clip, cite "
+        "it in a few words (its date and what it was), else null",
+    )
 
     @field_validator("seen_items")
     @classmethod
@@ -144,6 +163,25 @@ class UnscannedItem(BaseModel):
 class ToolCallLog(BaseModel):
     name: str
     args: dict
+
+
+class TokenUsage(BaseModel):
+    """Tokens Gemini used, summed over the calls of one step (logging to tune the prompts later)."""
+
+    input: int = Field(default=0, ge=0, le=10_000_000)
+    output: int = Field(default=0, ge=0, le=10_000_000)
+    thinking: int = Field(default=0, ge=0, le=10_000_000)
+    total: int = Field(default=0, ge=0, le=10_000_000)
+    calls: int = Field(default=0, ge=0, le=100)
+
+
+class MemoryRef(BaseModel):
+    """One past manager decision that was shown to Gemini for this investigation."""
+
+    incident_id: str
+    decision: Literal["confirm", "dismiss"]
+    reason: str | None = None
+    reviewed_at: str
 
 
 class Incident(BaseModel):
@@ -172,6 +210,52 @@ class Incident(BaseModel):
     # The part of the camera view the uploaded video was cropped to, [ymin, xmin, ymax, xmax] 0-1000; boxes on this
     # incident are already mapped back to the full view.
     video_crop: list[int] | None = None
+    # "edge" when the Live edge gate sent the clip (counts towards edge auto-tuning), "upload" for Investigate
+    origin: IncidentOrigin | None = None
+    # The edge gate's smoothed score when it sent this clip
+    edge_confidence: float | None = None
+    usage: TokenUsage | None = None
+    inventory_usage: TokenUsage | None = None
+    memory_used: list[MemoryRef] = []
+    # Whether a reference photo of the scanner was shown to Gemini: one uploaded with this clip, or the camera's
+    scanner_photo: Literal["clip", "saved"] | None = None
+    review_reason: str | None = None
+    review_note: str | None = None
+
+
+# ---------- Manager feedback (the per-camera memory) ----------
+class Feedback(BaseModel):
+    """A manager's decision on an incident, kept per camera and shown to Gemini on later investigations."""
+
+    incident_id: str
+    camera_id: str
+    decision: Literal["confirm", "dismiss"]
+    reason: str | None = None
+    note: str = Field(default="", max_length=200)
+    # What Gemini had said, so the example makes sense without the clip
+    verdict: VerdictKind
+    summary: str = Field(default="", max_length=300)
+    items: list[str] = []
+    reviewed_at: str
+
+
+# ---------- Edge gate tuning (live-synced to the browser) ----------
+class EdgeConfig(BaseModel):
+    """How strict the browser's Tier-1 gate is for one camera. Written by the server, read live by the browser."""
+
+    camera_id: str
+    level: int = Field(default=0, ge=0)
+    send_score: float
+    hot_frames: int
+    hold_extra_ms: int
+    reason: str = ""
+    changed_at: str | None = None
+    previous_level: int | None = None
+    # Edge alerts counted for the last decision
+    false_alarms: int = 0
+    alerts: int = 0
+    # Only alerts after this time count towards the next change (a change starts a fresh window)
+    since: str | None = None
 
 
 # ---------- Camera zone layouts (where the scanner etc. are in the picture) ----------

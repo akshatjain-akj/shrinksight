@@ -2,6 +2,9 @@ import { appCheckToken } from "./firebase";
 import type {
   AskAnswer,
   CameraLayout,
+  ConfirmReason,
+  DismissReason,
+  EdgeConfig,
   InventoryItem,
   Incident,
   InvestigationEvent,
@@ -9,6 +12,7 @@ import type {
   Rule,
   RuleSpec,
   Store,
+  TokenUsage,
   Transaction,
   ZoneHint,
   ZoneSuggestion,
@@ -62,11 +66,35 @@ export const api = {
   transactions: (laneId: string) => request<Transaction[]>(`/api/transactions?lane_id=${encodeURIComponent(laneId)}`),
   incidents: () => request<Incident[]>("/api/incidents"),
   incident: (id: string) => request<Incident>(`/api/incidents/${encodeURIComponent(id)}`),
-  review: (id: string, decision: "confirm" | "dismiss") =>
+  review: (
+    id: string,
+    decision: "confirm" | "dismiss",
+    reason: DismissReason | ConfirmReason | null = null,
+    note = "",
+  ) =>
     request<Incident>(`/api/incidents/${encodeURIComponent(id)}/review`, {
       method: "POST",
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({ decision, reason, note }),
     }),
+  edgeConfig: (cameraId: string) => request<EdgeConfig>(`/api/edge-config/${encodeURIComponent(cameraId)}`),
+  undoEdgeConfig: (cameraId: string) =>
+    request<EdgeConfig>(`/api/edge-config/${encodeURIComponent(cameraId)}/undo`, { method: "POST" }),
+  /** When each camera's scanner photo was saved, keyed by camera id. */
+  scannerPhotos: () => request<Record<string, string>>("/api/scanner-photos"),
+  scannerPhotoUrl: (cameraId: string, version: string) =>
+    `${API_BASE}/api/cameras/${encodeURIComponent(cameraId)}/scanner-photo?v=${encodeURIComponent(version)}`,
+  saveScannerPhoto: async (cameraId: string, photo: Blob) => {
+    const token = await appCheckToken();
+    const res = await fetch(`${API_BASE}/api/cameras/${encodeURIComponent(cameraId)}/scanner-photo`, {
+      method: "PUT",
+      body: photo,
+      headers: { "content-type": "image/jpeg", ...(token ? { "x-firebase-appcheck": token } : {}) },
+    });
+    if (!res.ok) throw await errorFrom(res);
+    return res.json() as Promise<{ camera_id: string; updated_at: string }>;
+  },
+  deleteScannerPhoto: (cameraId: string) =>
+    request<{ deleted: boolean }>(`/api/cameras/${encodeURIComponent(cameraId)}/scanner-photo`, { method: "DELETE" }),
   rules: () => request<Rule[]>("/api/rules"),
   compileRule: (text: string) =>
     request<{ spec: RuleSpec; problems: string[]; cached: boolean }>("/api/rules/compile", {
@@ -96,7 +124,7 @@ export const api = {
       },
     });
     if (!res.ok) throw await errorFrom(res);
-    return res.json() as Promise<{ items: InventoryItem[]; model: string; cached: boolean }>;
+    return res.json() as Promise<{ items: InventoryItem[]; model: string; cached: boolean; usage: TokenUsage | null }>;
   },
   layouts: () => request<Record<string, CameraLayout>>("/api/layouts"),
   saveLayout: (cameraId: string, zones: ZoneHint[]) =>
@@ -118,7 +146,7 @@ export const api = {
 };
 
 export interface MarkedStill {
-  label: "before" | "reach" | "hold" | "after" | "pickup_start" | "scanner_mid" | "bagging_end";
+  label: "before" | "reach" | "hold" | "after" | "pickup_start" | "scanner_mid" | "bagging_end" | "scanner_ref";
   blob: Blob;
 }
 
@@ -133,6 +161,11 @@ export interface InvestigateMeta {
   video_crop?: number[];
   transaction_id?: string;
   receipt?: ReceiptLine[];
+  /** "edge" when the Live edge gate sent the clip; it then counts towards the camera's auto-tuning. */
+  origin?: "edge" | "upload";
+  /** "none" skips the camera's saved scanner photo for this clip. */
+  scanner_photo?: "saved" | "none";
+  inventory_usage?: TokenUsage;
   tier1_events?: {
     t: string;
     kind: string;

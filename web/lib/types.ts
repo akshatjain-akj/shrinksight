@@ -80,6 +80,8 @@ export interface Verdict {
   seen_items: SeenItem[];
   timeline: TimelineEvent[];
   reason: string;
+  /** A past manager decision on this camera that Gemini found similar, e.g. "4 Oct: personal phone". */
+  similar_past_case?: string | null;
 }
 
 export interface UnscannedItem {
@@ -110,6 +112,41 @@ export interface ZoneSuggestion {
   description: string;
 }
 
+/** Tokens Gemini used, summed over a step's calls. */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  thinking: number;
+  total: number;
+  calls?: number;
+}
+
+export type DismissReason = "personal_item" | "rescan" | "bagging" | "staff" | "camera" | "other";
+export type ConfirmReason = "missed_scan" | "concealed" | "other";
+
+/** A past manager decision shown to Gemini for this investigation. */
+export interface MemoryRef {
+  incident_id: string;
+  decision: "confirm" | "dismiss";
+  reason: string | null;
+  reviewed_at: string;
+}
+
+/** How strict the browser's Tier-1 gate is for one camera (auto-tuned by the server). */
+export interface EdgeConfig {
+  camera_id: string;
+  level: number;
+  send_score: number;
+  hot_frames: number;
+  hold_extra_ms: number;
+  reason: string;
+  changed_at: string | null;
+  previous_level: number | null;
+  false_alarms: number;
+  alerts: number;
+  since: string | null;
+}
+
 export interface Incident {
   id: string;
   created_at: string;
@@ -134,6 +171,16 @@ export interface Incident {
   receipt_check?: string | null;
   overridden?: boolean;
   video_crop?: number[] | null;
+  /** "edge" when the Live edge gate sent the clip. */
+  origin?: "edge" | "upload" | null;
+  edge_confidence?: number | null;
+  usage?: TokenUsage | null;
+  inventory_usage?: TokenUsage | null;
+  memory_used?: MemoryRef[];
+  /** Whether Gemini saw a scanner reference photo: uploaded with this clip, or the camera's saved one. */
+  scanner_photo?: "clip" | "saved" | null;
+  review_reason?: string | null;
+  review_note?: string | null;
 }
 
 export interface InventoryItem {

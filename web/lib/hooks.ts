@@ -1,11 +1,12 @@
 "use client";
 
-import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, doc, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { syncLayoutsFromServer } from "./cameraConfig";
 import { db, ensureAuth } from "./firebase";
-import type { Incident, Rule, Store } from "./types";
+import { DEFAULT_TUNING, type EdgeTuning } from "./tier1/engine";
+import type { EdgeConfig, Incident, Rule, Store } from "./types";
 
 interface LiveState<T> {
   data: T[] | null;
@@ -84,4 +85,44 @@ export function useStore() {
       .catch((err: Error) => setError(err.message));
   }, []);
   return { store, error };
+}
+
+export function toTuning(config: EdgeConfig | null): EdgeTuning {
+  if (!config) return DEFAULT_TUNING;
+  return { sendScore: config.send_score, hotFrames: config.hot_frames, holdExtraMs: config.hold_extra_ms };
+}
+
+/**
+ * The camera's auto-tuned Tier-1 gate, kept live with a Firestore listener on edge_config/{camera}: when the server
+ * makes the gate stricter (or staff undo it), every open Live edge and Monitor picks it up without a reload.
+ */
+export function useEdgeConfig(cameraId: string | null | undefined) {
+  const [config, setConfig] = useState<EdgeConfig | null>(null);
+  useEffect(() => {
+    if (!cameraId) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    setConfig(null);
+    api
+      .edgeConfig(cameraId)
+      .then((loaded) => !cancelled && setConfig(loaded))
+      .catch(() => undefined);
+    ensureAuth()
+      .then(() => {
+        if (cancelled) return;
+        unsubscribe = onSnapshot(
+          doc(db(), "edge_config", cameraId),
+          (snap) => {
+            if (!cancelled && snap.exists()) setConfig(snap.data() as EdgeConfig);
+          },
+          () => undefined, // the API copy above still applies
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [cameraId]);
+  return { config, setConfig, tuning: toTuning(config) };
 }

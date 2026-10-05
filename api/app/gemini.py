@@ -47,6 +47,8 @@ class GenResult:
     function_calls: list[FunctionCall] = field(default_factory=list)
     # The model's turn, appended verbatim to the conversation (keeps thought signatures intact)
     content: Any = None
+    # Tokens this call used: input, output, thinking, total (empty if Gemini didn't say)
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -236,7 +238,28 @@ def _to_result(response: Any) -> GenResult:
         text = response.text or ""
     except ValueError:  # no text parts (e.g. function call only)
         text = ""
-    return GenResult(text=text, function_calls=calls, content=content)
+    return GenResult(text=text, function_calls=calls, content=content, usage=usage_of(response))
+
+
+def usage_of(response: Any) -> dict[str, int]:
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return {}
+    return {
+        "input": int(getattr(meta, "prompt_token_count", None) or 0),
+        "output": int(getattr(meta, "candidates_token_count", None) or 0),
+        "thinking": int(getattr(meta, "thoughts_token_count", None) or 0),
+        "total": int(getattr(meta, "total_token_count", None) or 0),
+    }
+
+
+def add_usage(total: dict[str, int], usage: dict[str, int]) -> dict[str, int]:
+    """Sums token counts across calls and counts the calls."""
+    if not usage:
+        return total
+    out = {key: total.get(key, 0) + usage.get(key, 0) for key in ("input", "output", "thinking", "total")}
+    out["calls"] = total.get("calls", 0) + 1
+    return out
 
 
 def _friendly(code: int | None, raw: str) -> str:

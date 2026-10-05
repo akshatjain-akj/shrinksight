@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { clipSeconds, dateTime, inr } from "@/lib/format";
-import type { Incident, SeenItem } from "@/lib/types";
+import type { ConfirmReason, DismissReason, Incident, SeenItem, TokenUsage } from "@/lib/types";
 import AskPanel from "./AskPanel";
 import { ErrorNotice, StatusPill, VerdictBadge } from "./ui";
 
@@ -20,6 +21,38 @@ function timingText(timings?: Record<string, number>): string {
     .map(([key, label]) => `${label} ${(timings[key] / 1000).toFixed(1)} s`)
     .join(" · ");
 }
+
+// Temporary logging to watch token use while we tune prompts; flip to false to hide it.
+const SHOW_TOKENS = true;
+
+const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+
+function tokenText(usage?: TokenUsage | null, inventory?: TokenUsage | null): string {
+  if (!usage) return "";
+  const parts = [`${k(usage.input)} in`, `${k(usage.output)} out`];
+  if (usage.thinking) parts.push(`${k(usage.thinking)} thinking`);
+  if (usage.calls && usage.calls > 1) parts.push(`${usage.calls} calls`);
+  if (inventory?.total) parts.push(`item list ${k(inventory.total)}`);
+  const total = usage.total + (inventory?.total ?? 0);
+  return `Tokens: ${k(total)} total (${parts.join(" · ")})`;
+}
+
+const DISMISS_REASONS: [DismissReason, string][] = [
+  ["personal_item", "Personal item"],
+  ["rescan", "Rescan"],
+  ["bagging", "Bagging gesture"],
+  ["staff", "Staff action"],
+  ["camera", "Camera or footage issue"],
+  ["other", "Other"],
+];
+
+const CONFIRM_REASONS: [ConfirmReason, string][] = [
+  ["missed_scan", "Item not scanned"],
+  ["concealed", "Item concealed"],
+  ["other", "Other"],
+];
+
+const REASON_LABEL: Record<string, string> = Object.fromEntries([...DISMISS_REASONS, ...CONFIRM_REASONS]);
 
 const LOCATION_TEXT: Record<string, string> = {
   over_scanner: "passed over the scanner",
@@ -119,6 +152,10 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
   const [current, setCurrent] = useState(incident);
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The decision being made: staff pick a reason, which becomes this camera's memory for Gemini.
+  const [pending, setPending] = useState<"confirm" | "dismiss" | null>(null);
+  const [reason, setReason] = useState<DismissReason | ConfirmReason | null>(null);
+  const [note, setNote] = useState("");
 
   const seek = (t: string, item?: SeenItem) => {
     if (item) setFocus(item);
@@ -128,11 +165,20 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
     }
   };
 
-  const review = async (decision: "confirm" | "dismiss") => {
+  const startReview = (decision: "confirm" | "dismiss") => {
+    setPending(decision);
+    setReason(null);
+    setNote("");
+    setError(null);
+  };
+
+  const review = async () => {
+    if (!pending) return;
     setReviewing(true);
     setError(null);
     try {
-      setCurrent(await api.review(incident.id, decision));
+      setCurrent(await api.review(incident.id, pending, reason, note.trim()));
+      setPending(null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -163,6 +209,12 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                   Receipt check overrode Gemini’s verdict
                 </span>
               )}
+              {incident.scanner_photo && (
+                <span className="chip" title="Gemini compared every scan with a reference photo of this checkout's scanner">
+                  {incident.scanner_photo === "clip" ? "Scanner photo used" : "Camera’s scanner photo used"}
+                </span>
+              )}
+              {incident.origin === "edge" && <span className="chip">Sent by the live edge</span>}
             </div>
           </div>
           {incident.est_loss_inr > 0 && (
@@ -181,6 +233,31 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
           <h2>Evidence</h2>
           <Evidence incident={incident} videoUrl={videoUrl} focus={focus} videoRef={videoRef} />
           <blockquote className="reason">{verdict.reason}</blockquote>
+          {verdict.similar_past_case && (
+            <p className="memory-note small" style={{ margin: 0 }}>
+              <strong>Like a past decision on this camera:</strong> {verdict.similar_past_case}
+            </p>
+          )}
+          {incident.memory_used && incident.memory_used.length > 0 && (
+            <details className="small">
+              <summary>
+                Gemini used {incident.memory_used.length} past decision{incident.memory_used.length === 1 ? "" : "s"} from
+                this camera
+              </summary>
+              <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem" }}>
+                {incident.memory_used.map((m) => (
+                  <li key={m.incident_id}>
+                    {dateTime(m.reviewed_at)} · {m.decision === "dismiss" ? "Dismissed" : "Confirmed"}
+                    {m.reason ? ` (${REASON_LABEL[m.reason] ?? m.reason})` : ""} ·{" "}
+                    <Link href={`/incident?id=${encodeURIComponent(m.incident_id)}`}>open</Link>
+                  </li>
+                ))}
+              </ul>
+              <p className="muted" style={{ margin: "0.3rem 0 0" }}>
+                Past decisions are context only. The till receipt check always has the final say on what was paid.
+              </p>
+            </details>
+          )}
           {verdict.timeline.length > 0 && (
             <section>
               <h3>What happened</h3>
@@ -318,31 +395,81 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
 
           <section className="card stack" aria-labelledby="review-title">
             <h2 id="review-title">Human review</h2>
-            {current.status === "NEEDS_REVIEW" ? (
+            {pending ? (
+              <div className="stack" style={{ gap: "0.5rem" }}>
+                <p className="small" style={{ margin: 0 }}>
+                  {pending === "dismiss" ? "Why is this not a theft?" : "What happened?"}{" "}
+                  <span className="muted">Gemini remembers this for future clips from this camera.</span>
+                </p>
+                <div className="reason-chips" role="group" aria-label="Reason">
+                  {(pending === "dismiss" ? DISMISS_REASONS : CONFIRM_REASONS).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="btn btn-sm"
+                      aria-pressed={reason === value}
+                      onClick={() => setReason(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <label className="field small">
+                  Note (optional)
+                  <input
+                    type="text"
+                    maxLength={200}
+                    value={note}
+                    placeholder={pending === "dismiss" ? "e.g. shopper's own phone" : "e.g. razor pack under the cereal"}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </label>
+                <div className="row">
+                  <button
+                    type="button"
+                    className={`btn ${pending === "dismiss" ? "btn-danger" : "btn-success"}`}
+                    disabled={reviewing || (pending === "dismiss" && !reason)}
+                    onClick={review}
+                  >
+                    {pending === "dismiss" ? "✗ Dismiss" : "✓ Confirm"}
+                  </button>
+                  <button type="button" className="btn btn-ghost" disabled={reviewing} onClick={() => setPending(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : current.status === "NEEDS_REVIEW" ? (
               <>
                 <p className="muted small" style={{ margin: 0 }}>
                   ShrinkSight flags events; a person always makes the call.
                 </p>
                 <div className="row">
-                  <button type="button" className="btn btn-success" disabled={reviewing} onClick={() => review("confirm")}>
+                  <button type="button" className="btn btn-success" disabled={reviewing} onClick={() => startReview("confirm")}>
                     ✓ Confirm
                   </button>
-                  <button type="button" className="btn btn-danger" disabled={reviewing} onClick={() => review("dismiss")}>
+                  <button type="button" className="btn btn-danger" disabled={reviewing} onClick={() => startReview("dismiss")}>
                     ✗ Dismiss
                   </button>
                 </div>
               </>
             ) : current.status === "REJECTED" ? (
-              <p style={{ margin: 0 }}>
-                Gemini rejected this alert, so nobody was disturbed.
-                {incident.receipt_check && (
-                  <span className="seen-meta">Why: {incident.receipt_check.replace(/^Receipt check: /, "")}</span>
-                )}
-              </p>
+              <>
+                <p style={{ margin: 0 }}>
+                  Gemini rejected this alert, so nobody was disturbed.
+                  {incident.receipt_check && (
+                    <span className="seen-meta">Why: {incident.receipt_check.replace(/^Receipt check: /, "")}</span>
+                  )}
+                </p>
+                <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => startReview("confirm")}>
+                  Gemini got this wrong? Mark it as a theft
+                </button>
+              </>
             ) : (
               <p style={{ margin: 0 }}>
                 {current.status === "RESOLVED_CONFIRMED" ? "Confirmed" : "Dismissed"} by staff
+                {current.review_reason ? ` (${REASON_LABEL[current.review_reason] ?? current.review_reason})` : ""}
                 {current.reviewed_at ? ` · ${dateTime(current.reviewed_at)}` : ""}.
+                {current.review_note && <span className="seen-meta">Note: {current.review_note}</span>}
               </p>
             )}
             {error && <ErrorNotice>{error}</ErrorNotice>}
@@ -359,6 +486,11 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                   ? ` · ${(incident.latency_ms / 1000).toFixed(1)} s`
                   : ""}
             </p>
+            {SHOW_TOKENS && incident.usage && (
+              <p className="muted small token-log" style={{ margin: 0 }}>
+                {tokenText(incident.usage, incident.inventory_usage)}
+              </p>
+            )}
           </section>
           <AskPanel incident={current} />
         </div>
