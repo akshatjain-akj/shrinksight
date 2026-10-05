@@ -15,10 +15,14 @@ def verdict_json(**overrides) -> str:
         "items_seen": 4,
         "items_scanned": 3,
         "seen_items": [
-            {"t": "00:01.0", "description": "milk carton", "scanned": True, "box_2d": [1, 2, 3, 4]},
-            {"t": "00:03.0", "description": "bread loaf", "scanned": True},
-            {"t": "00:06.4", "description": "red wine bottle", "scanned": False, "box_2d": [300, 600, 640, 700]},
-            {"t": "00:08.0", "description": "chips packet", "scanned": True},
+            {"t": "00:01.0", "description": "milk carton", "scanned": True, "box_2d": [1, 2, 3, 4],
+             "receipt_line": 1, "location": "over_scanner"},
+            {"t": "00:03.0", "description": "bread loaf", "scanned": True, "receipt_line": 2,
+             "location": "over_scanner"},
+            {"t": "00:06.4", "description": "red wine bottle", "scanned": False, "box_2d": [300, 600, 640, 700],
+             "receipt_line": None, "location": "beside_scanner"},
+            {"t": "00:08.0", "description": "chips packet", "scanned": True, "receipt_line": 3,
+             "location": "over_scanner"},
         ],
         "timeline": [{"t": "00:06.4", "event": "wine bottle moved beside the scanner"}],
         "reason": "The wine bottle went around the scanner.",
@@ -68,7 +72,12 @@ def test_same_clip_is_served_from_cache_without_calling_gemini(repo, settings):
 
 
 def test_receipt_is_fetched_even_if_model_skips_the_tool(repo, settings):
-    gateway = FakeGateway([text("all scanned"), text(verdict_json(verdict="BENIGN", items_scanned=4))])
+    all_matched = [
+        {"t": f"00:0{i}.0", "description": name, "scanned": True, "receipt_line": i, "location": "over_scanner"}
+        for i, name in enumerate(["soft drink bottle", "noodles pack", "biscuits pack", "oil bottle"], start=1)
+    ]
+    benign = verdict_json(verdict="BENIGN", items_scanned=4, seen_items=all_matched)
+    gateway = FakeGateway([text("all scanned"), text(benign)])
 
     events = run(repo, gateway, settings)
 

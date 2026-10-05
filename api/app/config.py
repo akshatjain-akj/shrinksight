@@ -42,6 +42,9 @@ class Settings:
     per_ip_per_minute: int = field(default_factory=lambda: _env_int("PER_IP_PER_MINUTE", 6))
     daily_investigations: int = field(default_factory=lambda: _env_int("DAILY_INVESTIGATIONS", 40))
     daily_rule_compiles: int = field(default_factory=lambda: _env_int("DAILY_RULE_COMPILES", 100))
+    daily_zone_suggestions: int = field(default_factory=lambda: _env_int("DAILY_ZONE_SUGGESTIONS", 30))
+    daily_layout_saves: int = field(default_factory=lambda: _env_int("DAILY_LAYOUT_SAVES", 200))
+    max_frame_bytes: int = 2 * 1024 * 1024
 
     # "firestore" on Cloud Run; "memory" for local runs without Google credentials (data resets on restart)
     repo_backend: str = field(default_factory=lambda: _env("REPO_BACKEND", "firestore"))

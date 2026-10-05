@@ -21,6 +21,12 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 | **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress |
 | **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable |
 | **Setup check** (`/setup`) | Verifies Cloud Run, Firestore, Storage, Auth and Gemini |
+
+**How self-checkout accuracy works:** Gemini lists every item handled and matches each one to a till receipt
+line; an item counts as unscanned only if no line matches. Answers that contradict the receipt are re-asked once,
+then marked inconclusive instead of raising a false alarm. Each camera's scanner and bagging areas are marked once
+(or suggested by Gemini from a frame) and drawn onto the stills Gemini sees, so any camera angle works.
+Measured with the [evaluation harness](eval/README.md).
 ## Data flow
 
 A live clip is not stored. Gemini sees a short face-blurred WebM, then only the incident and a cache pointer are kept.

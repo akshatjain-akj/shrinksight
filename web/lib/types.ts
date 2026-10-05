@@ -44,11 +44,15 @@ export interface Transaction {
   total_inr: number;
 }
 
+export type ItemLocation = "over_scanner" | "beside_scanner" | "hidden_under_item" | "never_near_scanner" | "unclear";
+
 export interface SeenItem {
   t: string;
   description: string;
   scanned: boolean;
   box_2d: number[];
+  receipt_line?: number | null;
+  location?: ItemLocation;
 }
 
 export interface TimelineEvent {
@@ -73,6 +77,27 @@ export interface UnscannedItem {
   matched_sku: string | null;
 }
 
+/** A marked zone in a camera's picture. Points are normalised 0–1, origin top-left. */
+export interface ZoneHint {
+  zone_id: string;
+  kind: Zone["kind"];
+  polygon: { x: number; y: number }[];
+  description: string;
+}
+
+export interface CameraLayout {
+  camera_id: string;
+  zones: ZoneHint[];
+  updated_at: string;
+}
+
+export interface ZoneSuggestion {
+  zone_id: string;
+  found: boolean;
+  box_2d: number[];
+  description: string;
+}
+
 export interface Incident {
   id: string;
   created_at: string;
@@ -90,6 +115,7 @@ export interface Incident {
   latency_ms: number | null;
   tool_calls: { name: string; args: Record<string, unknown> }[];
   reviewed_at: string | null;
+  zones_used?: ZoneHint[];
 }
 
 export interface RuleSpec {

@@ -6,6 +6,8 @@ import {
   DEFAULT_DETECTION,
   loadCameraConfigs,
   saveCameraConfig,
+  saveLayoutForEveryone,
+  syncLayoutsFromServer,
   type DetectionSwitches,
 } from "@/lib/cameraConfig";
 import { useStore } from "@/lib/hooks";
@@ -27,6 +29,8 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
   const [editing, setEditing] = useState(true);
   const [drag, setDrag] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [synced, setSynced] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
 
   const camera = cameras.find((item) => item.id === cameraId) ?? cameras[0];
@@ -40,6 +44,14 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
   }, [initialCameraId]);
 
   useEffect(() => {
+    let current = true;
+    void syncLayoutsFromServer().then(() => current && setSynced((n) => n + 1));
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!camera || !store) return;
     const savedConfig = loadCameraConfigs()[camera.id];
     const shapes = polygonsFor(
@@ -51,7 +63,7 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     setZoneId((current) => (current && camera.zone_ids.includes(current) ? current : shapes[0]?.id ?? null));
     setSaved(false);
     setEditing(true);
-  }, [camera, store]);
+  }, [camera, store, synced]);
 
   const points = zone ? polygons[zone.id] ?? [] : [];
 
@@ -71,10 +83,18 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     setSaved(false);
   };
 
-  const save = () => {
+  const save = async () => {
     if (!camera) return;
-    saveCameraConfig(camera.id, { detection, polygons });
-    setSaved(true);
+    setSaveError(null);
+    const current = loadCameraConfigs()[camera.id];
+    saveCameraConfig(camera.id, { ...current, detection, polygons });
+    try {
+      const shapes = zones.map((item) => ({ id: item.id, name: item.name, kind: item.kind, polygon: polygons[item.id] ?? [] }));
+      await saveLayoutForEveryone(camera.id, shapes, current?.descriptions ?? {});
+      setSaved(true);
+    } catch (e) {
+      setSaveError(`Saved on this browser only: ${(e as Error).message}`);
+    }
   };
 
   if (error) return <ErrorNotice>Couldn’t load the store: {error}</ErrorNotice>;
@@ -233,7 +253,8 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
           <button type="button" className="btn btn-primary" onClick={save}>
             Save configuration
           </button>
-          {saved && <p className="hint">Saved on this browser.</p>}
+          {saved && <p className="hint">Saved for everyone using this camera.</p>}
+          {saveError && <ErrorNotice>{saveError}</ErrorNotice>}
         </aside>
       </div>
     </section>

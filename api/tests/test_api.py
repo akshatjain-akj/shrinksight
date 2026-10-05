@@ -74,7 +74,8 @@ def test_rule_with_unknown_zone_cannot_be_saved(api):
 
 def test_investigate_streams_progress_then_result(api):
     main.app.state.gateway = FakeGateway([text("notes"), text(verdict_json())])
-    receipt = [{"name": "Toned milk 1L", "price_inr": 68}, {"name": "Whole wheat bread", "price_inr": 50}]
+    receipt = [{"name": "Toned milk 1L", "price_inr": 68}, {"name": "Whole wheat bread", "price_inr": 50},
+               {"name": "Potato chips 150g packet", "price_inr": 50}]
 
     res = api.post(
         "/api/investigate",
@@ -88,7 +89,10 @@ def test_investigate_streams_progress_then_result(api):
     events = sse_events(res.text)
     assert [e["type"] for e in events][-1] == "result"
     incident = events[-1]["incident"]
-    assert [line["name"] for line in incident["receipt"]] == ["Toned milk 1L", "Whole wheat bread"]
+    assert [line["name"] for line in incident["receipt"]] == [
+        "Toned milk 1L", "Whole wheat bread", "Potato chips 150g packet"
+    ]
+    assert incident["verdict"]["items_scanned"] == 3 and incident["est_loss_inr"] == 1850
     assert incident["transaction_id"].startswith("TXN-LIVE-")
 
 
