@@ -214,6 +214,7 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                   {verdict.seen_items.map((item, i) => (
                     <tr key={i} className={item.scanned ? undefined : "missing"}>
                       <td>
+                        {item.inventory_id ? <span className="chip tone-accent">#{item.inventory_id}</span> : null}{" "}
                         <button type="button" className="linkish" onClick={() => seek(item.t, item)}>
                           {item.description}
                         </button>{" "}

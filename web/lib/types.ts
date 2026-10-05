@@ -53,6 +53,8 @@ export interface SeenItem {
   box_2d: number[];
   receipt_line?: number | null;
   location?: ItemLocation;
+  /** # in the confirmed item list, or null for an extra item. */
+  inventory_id?: number | null;
 }
 
 export interface TimelineEvent {
@@ -122,6 +124,12 @@ export interface Incident {
   zones_used?: ZoneHint[];
   /** Where the investigation's time went, in ms (lookup, upload, watch, recheck, total). */
   timings?: Record<string, number>;
+}
+
+export interface InventoryItem {
+  description: string;
+  /** [ymin, xmin, ymax, xmax] 0–1000 in the item-pile close-up; empty for items you typed in. */
+  box_2d: number[];
 }
 
 export interface AskAnswer {

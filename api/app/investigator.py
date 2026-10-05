@@ -28,6 +28,7 @@ from .models import (
     POSITIVE_VERDICTS,
     Camera,
     Incident,
+    InventoryItem,
     ReceiptLine,
     ToolCallLog,
     Transaction,
@@ -36,12 +37,12 @@ from .models import (
     ZoneHint,
     status_for,
 )
-from .reconcile import receipt_lines_text, reconcile
+from .reconcile import confirmed_list_text, receipt_lines_text, reconcile
 from .repo import Repo, match_sku
 from .zones import zones_context
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-07.flat-items"
+PROMPT_VERSION = "2026-10-08.confirmed-list"
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
@@ -102,7 +103,8 @@ person when present. Judge the stills and the video together.
 """
 
 VERDICT_INSTRUCTION = """Return the verdict as JSON matching the schema.
-inventory: every separate item in the item pile at the start, each with a box (self-checkout), else empty.
+inventory: every separate item in the item pile at the start, each with a box (self-checkout), else empty. If a
+confirmed item list is given, you may leave inventory empty: set inventory_id on each seen item instead.
 Leave starting_items empty.
 seen_items: every item you saw handled. For each: receipt_line = the number of the receipt line it matches (each
 line used at most once), or null if no line matches; scanned = true exactly when receipt_line is set; location =
@@ -259,8 +261,16 @@ def _lookups(camera: Camera) -> list[tuple[str, dict[str, Any]]]:
     return [("get_zone_policy", {"zone_id": zone_id}) for zone_id in camera.zone_ids]
 
 
-def _briefing(context: str, receipt: list[ReceiptLine], tool_results: list[dict], camera: Camera) -> str:
+def _briefing(
+    context: str,
+    receipt: list[ReceiptLine],
+    tool_results: list[dict],
+    camera: Camera,
+    confirmed: list[InventoryItem] | None = None,
+) -> str:
     parts = [context]
+    if confirmed:
+        parts.append(confirmed_list_text(confirmed))
     if camera.kind == "checkout":
         parts.append(receipt_lines_text(receipt))
         if receipt:
@@ -306,13 +316,13 @@ def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadli
     raise GeminiUnavailable("No Gemini model is configured.")
 
 
-def _parse(text: str, receipt: list[ReceiptLine]):
+def _parse(text: str, receipt: list[ReceiptLine], confirmed: list[InventoryItem] | None = None):
     """Returns (verdict | None, hard problems, soft problems, json error)."""
     try:
         parsed = VerdictOut.model_validate_json(text)
     except ValidationError as exc:
         return None, [], [], str(exc)[:400]
-    checked, hard, soft = reconcile(parsed, receipt)
+    checked, hard, soft = reconcile(parsed, receipt, confirmed)
     return checked, hard, soft, None
 
 
@@ -334,6 +344,7 @@ def investigate(
     stills: list[tuple[str, bytes]] | None = None,
     zones: list[ZoneHint] | None = None,
     clip_seconds: float | None = None,
+    inventory: list[InventoryItem] | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event."""
     started = time.monotonic()
@@ -342,7 +353,9 @@ def investigate(
     zones = zones or []
     long_clip = clip_seconds is not None and clip_seconds > settings.long_clip_seconds
     fps = settings.long_clip_fps if long_clip else settings.clip_fps
-    key = cache_key(clip, camera, transaction, f"{settings.investigator_model}@{fps}fps", stills, zones)
+    confirmed = inventory or []
+    variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps([i.description for i in confirmed])
+    key = cache_key(clip, camera, transaction, variant, stills, zones)
 
     cached = repo.cache_get(key)
     if cached and (incident := repo.get_incident(cached["incident_id"])):
@@ -389,7 +402,7 @@ def investigate(
         )
         timings["upload_ms"] = _ms(step)
 
-        briefing = _briefing(context, receipt, tool_results, camera)
+        briefing = _briefing(context, receipt, tool_results, camera, confirmed)
 
         def contents_for(plain: bool) -> list:
             clip_part = plain_video if plain else video
@@ -402,6 +415,7 @@ def investigate(
                 response_mime_type="application/json",
                 response_schema=VerdictOut,
                 temperature=0,
+                seed=settings.gemini_seed or None,
                 # Resolution is set per part (video low, stills medium, close-ups high), not for the whole request.
                 thinking_config=None if plain else thinking_config(types, model, settings.thinking_level),
             )
@@ -414,7 +428,7 @@ def investigate(
             gateway, models, contents_for, config_for, deadline, settings.watch_timeout_ms
         )
         timings["watch_ms"] = _ms(step)
-        first, hard, soft, json_error = _parse(result.text, receipt)
+        first, hard, soft, json_error = _parse(result.text, receipt, confirmed)
         chosen, chosen_hard = (first, hard) if first is not None else (None, [])
 
         # ---- 4. One re-check, only if the answer doesn't add up and there's time ----
@@ -424,7 +438,7 @@ def investigate(
             yield _progress("recheck", "Double-checking against the till receipt" if receipt else "Double-checking")
             problem = (
                 f"That JSON was invalid: {json_error}\nReturn corrected JSON only." if json_error else
-                "Your answer doesn't add up against the till receipt:\n- " + "\n- ".join(hard + soft)
+                "Your answer doesn't add up against the till receipt and the item list:\n- " + "\n- ".join(hard + soft)
                 + "\nWatch again and return corrected JSON only."
             )
             follow_up = contents_for(plain)
@@ -436,7 +450,7 @@ def investigate(
                     model, follow_up, config_for(model, plain), deadline=deadline, retries=0,
                     timeout_ms=settings.watch_timeout_ms,
                 )
-                second, hard2, _, _ = _parse(again.text, receipt)
+                second, hard2, _, _ = _parse(again.text, receipt, confirmed)
                 if second is not None and (not hard2 or chosen is None or chosen_hard):
                     chosen, chosen_hard = second, hard2
             except GeminiUnavailable:

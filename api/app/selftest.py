@@ -108,7 +108,7 @@ def check_models(settings: Settings) -> CheckResult:
         from .gemini import GeminiGateway, model_chain
 
         gateway = GeminiGateway(settings.gemini_api_key, settings.gemini_timeout_ms, 0)
-        chain = model_chain(settings.investigator_model, settings.fallback_models)
+        chain = model_chain(settings.investigator_model, (settings.inventory_model, *settings.fallback_models))
         results = [(m, *gateway.check_model(m)) for m in chain]
         summary = " · ".join(f"{'✓' if ok else '✗'} {m}" + ("" if ok else f" ({detail})") for m, ok, detail in results)
         if not all(ok for _, ok, _ in results):

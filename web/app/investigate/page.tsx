@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ClipRecorder from "@/components/ClipRecorder";
 import IncidentDetail from "@/components/IncidentDetail";
+import InventoryConfirm, { INVENTORY_OFF, type InventoryState } from "@/components/InventoryConfirm";
 import ProgressSteps, { type Step } from "@/components/ProgressSteps";
 import ReceiptEditor, { emptyLine } from "@/components/ReceiptEditor";
 import { ErrorNotice, Skeletons } from "@/components/ui";
@@ -11,7 +12,7 @@ import ZoneMarker, { markedShapes, type ZoneState } from "@/components/ZoneMarke
 import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
 import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { inr } from "@/lib/format";
-import { firstFrame, markedStills, type Frame } from "@/lib/frames";
+import { canvasToJpeg, firstFrame, markedStills, numberedPile, pileViews, type Frame, type PileViews } from "@/lib/frames";
 import { shrinkClip } from "@/lib/transcode";
 import { useStore } from "@/lib/hooks";
 import { shapesToHints } from "@/lib/tier1/zones";
@@ -39,6 +40,29 @@ export default function InvestigatePage() {
   const [frameError, setFrameError] = useState<string | null>(null);
   const [zoneState, setZoneState] = useState<ZoneState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [inventory, setInventoryState] = useState<InventoryState>(INVENTORY_OFF);
+  // The run loop reads the latest list (and whether the user is editing it) through this ref.
+  const inventoryRef = useRef<InventoryState>(INVENTORY_OFF);
+  const setInventory = (next: InventoryState) => {
+    inventoryRef.current = next;
+    setInventoryState(next);
+  };
+
+  /** Waits until the list can be used: auto when untouched, or after "Continue" if the user edited it. */
+  const awaitInventory = async (signal: AbortSignal, prepDoneAt: number): Promise<InventoryState> => {
+    for (;;) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const current = inventoryRef.current;
+      if (current.status === "off" || current.status === "failed") return current;
+      if (current.status === "ready" && (!current.touched || current.confirmed)) return current;
+      if (current.status === "listing" && Date.now() - prepDoneAt > 8000) {
+        const timedOut: InventoryState = { ...current, status: "failed" };
+        setInventory(timedOut);
+        return timedOut;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  };
 
   const camera = store?.cameras.find((c) => c.id === cameraId);
   const isCheckout = camera?.kind === "checkout";
@@ -132,13 +156,54 @@ export default function InvestigatePage() {
       setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label, done: false }]);
     const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
 
-    // Stills (from the full-resolution original) and the upload-size optimisation run side by side.
+    // 1. Item-pile inventory: one image-only Gemini call, running while the clip is optimised.
+    const pileZone = isCheckout ? zonesToSend.find((z) => z.kind === "pickup") : undefined;
+    let pile: PileViews | null = null;
+    if (pileZone && clipUrl) {
+      pile = await pileViews(clipUrl, pileZone).catch(() => null);
+    }
+    setInventory(pile ? { ...INVENTORY_OFF, status: "listing" } : INVENTORY_OFF);
+    if (pile) {
+      api
+        .inventory(camera.id, pile.views)
+        .then((res) => {
+          if (inventoryRef.current.status === "listing") {
+            setInventory({ ...INVENTORY_OFF, status: "ready", items: res.items, model: res.model });
+          }
+        })
+        .catch(() => inventoryRef.current.status === "listing" && setInventory({ ...INVENTORY_OFF, status: "failed" }));
+    }
+
+    // 2. Stills (from the full-resolution original) and the upload-size optimisation run side by side.
     setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
-    const [stills, upload] = await Promise.all([
+    const [baseStills, upload] = await Promise.all([
       // Some codecs can't be seeked in the browser; the clip alone still works.
-      clipUrl ? markedStills(clipUrl, zonesToSend).catch((): MarkedStill[] => []) : Promise.resolve<MarkedStill[]>([]),
+      clipUrl
+        ? markedStills(clipUrl, zonesToSend, { skipPickup: Boolean(pile) }).catch((): MarkedStill[] => [])
+        : Promise.resolve<MarkedStill[]>([]),
       shrinkClip(clip, (f) => relabel(`Optimising the clip for upload · ${Math.round(f * 100)}%`)),
     ]);
+    const stills = [...baseStills];
+
+    // 3. Use the confirmed list: numbered boxes on the pile close-up, and the list itself for Gemini to track.
+    if (pile) {
+      if (inventoryRef.current.status === "listing") advance("Waiting for the item list");
+      let listed: InventoryState;
+      try {
+        listed = await awaitInventory(controller.signal, Date.now());
+      } catch {
+        setRunning(false);
+        return;
+      }
+      if (listed.status === "ready" && listed.items.length) {
+        setInventory({ ...listed, status: "used" });
+        stills.push({ label: "pickup_start", blob: await numberedPile(pile.base, listed.items) });
+        meta.inventory = listed.items.map((i) => ({ description: i.description, box_2d: i.box_2d ?? [] }));
+      } else {
+        stills.push({ label: "pickup_start", blob: await canvasToJpeg(pile.base) });
+      }
+    }
+
     const sizeNote = upload.size < clip.size ? `${mb(upload.size)} MB, was ${mb(clip.size)} MB` : `${mb(upload.size)} MB`;
     advance(`Uploading the clip (${sizeNote}) · 0%`);
     try {
@@ -173,6 +238,7 @@ export default function InvestigatePage() {
     setClip(null);
     setClipUrl(null);
     setFrame(null);
+    setInventory(INVENTORY_OFF);
   };
 
   if (result) {
@@ -316,6 +382,7 @@ export default function InvestigatePage() {
             {clip && !receiptReady && <span className="hint">Add at least one scanned item.</span>}
             {clip && receiptReady && !consent && <span className="hint">Tick the consent box to continue.</span>}
             {steps.length > 0 && <ProgressSteps steps={steps} running={running} />}
+            <InventoryConfirm state={inventory} onChange={setInventory} />
             {error && (
               <ErrorNotice onRetry={canRun ? run : undefined}>{error}</ErrorNotice>
             )}

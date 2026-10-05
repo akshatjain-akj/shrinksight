@@ -74,6 +74,9 @@ class SeenItem(BaseModel):
     location: ItemLocation = Field(
         default="unclear", description="Where the item went relative to the marked scanner zone"
     )
+    inventory_id: int | None = Field(
+        default=None, description="The # of this item in the confirmed item list, or null for an extra item"
+    )
 
 
 class InventoryItem(BaseModel):
@@ -81,6 +84,12 @@ class InventoryItem(BaseModel):
     box_2d: list[int] = Field(
         default_factory=list, description="[ymin, xmin, ymax, xmax] 0-1000 in the item-pile close-up (or first frame)"
     )
+
+
+class InventoryOut(BaseModel):
+    """What the dedicated inventory call returns: every separate object in the item pile."""
+
+    items: list[InventoryItem] = Field(default_factory=list)
 
 
 class TimelineEvent(BaseModel):

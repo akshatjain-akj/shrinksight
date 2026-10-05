@@ -16,10 +16,12 @@ from .agent import ask as ask_agent
 from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
+from .inventory import take_inventory
 from .investigator import investigate, normalise_mime
 from .models import (
     POSITIVE_VERDICTS,
     CameraLayout,
+    InventoryItem,
     ReceiptLine,
     Rule,
     RuleSpec,
@@ -207,6 +209,40 @@ async def suggest_layout(camera_id: str, request: Request) -> dict:
     return {"camera_id": camera.id, "zones": [s.model_dump() for s in suggestions], "cached": cached}
 
 
+# ---------- item-pile inventory ----------
+INVENTORY_VIEWS = ("pile", "left", "right")
+
+
+@app.post("/api/inventory")
+async def inventory(request: Request) -> dict:
+    """Multipart 'view' JPEGs named pile/left/right; header x-shrinksight-meta {camera_id}. Lists the pile's items."""
+    enforce_app_check(request)
+    meta = _parse_meta(request.headers.get("x-shrinksight-meta"))
+    repo = await asyncio.to_thread(get_repo)
+    camera = await asyncio.to_thread(_camera_or_404, repo, meta.camera_id)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > len(INVENTORY_VIEWS) * STILL_LIMIT + 64 * 1024:
+        raise HTTPException(413, "Inventory images are too large")
+    await asyncio.to_thread(enforce_limits, request, repo, "inventory", cfg().daily_inventories)
+    form = await request.form(max_files=len(INVENTORY_VIEWS), max_fields=len(INVENTORY_VIEWS))
+    views: list[tuple[str, bytes]] = []
+    for item in form.getlist("view"):
+        label = (getattr(item, "filename", "") or "").rsplit(".", 1)[0]
+        if not hasattr(item, "read") or label not in INVENTORY_VIEWS:
+            continue
+        data = await item.read()
+        if data.startswith(b"\xff\xd8") and len(data) <= STILL_LIMIT:
+            views.append((label, data))
+    if not any(label == "pile" for label, _ in views):
+        raise HTTPException(400, "Send at least the 'pile' view")
+    views.sort(key=lambda v: INVENTORY_VIEWS.index(v[0]))
+    try:
+        items, model, cached = await asyncio.to_thread(take_inventory, views, camera, get_gateway(), cfg(), repo)
+    except GeminiUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"items": [i.model_dump() for i in items], "model": model, "cached": cached}
+
+
 # ---------- incidents ----------
 @app.get("/api/incidents")
 def incidents(limit: int = Query(default=50, ge=1, le=100)) -> list[dict]:
@@ -360,6 +396,8 @@ class InvestigateMeta(BaseModel):
     receipt: list[ReceiptLine] | None = Field(default=None, max_length=30)
     tier1_events: list[Tier1EventIn] = Field(default_factory=list, max_length=12)
     clip_seconds: float | None = Field(default=None, ge=0, le=600)
+    # The item list confirmed in the browser (from the inventory call, possibly edited). Tracked one by one.
+    inventory: list[InventoryItem] | None = Field(default=None, max_length=30)
     # Zones marked for this clip. None = use the camera's saved layout; [] = send no zones.
     zones: list[ZoneHint] | None = Field(default=None, max_length=8)
 
@@ -491,6 +529,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             stills=stills,
             zones=zones,
             clip_seconds=meta.clip_seconds,
+            inventory=meta.inventory,
         ):
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
