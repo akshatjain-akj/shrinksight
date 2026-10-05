@@ -59,6 +59,8 @@ export interface Frame {
   dataUrl: string;
   width: number;
   height: number;
+  /** Clip length in seconds, if the browser could tell. */
+  duration: number | null;
 }
 
 /** The frame used for marking zones: half a second in, so the first black frame is skipped. */
@@ -68,18 +70,20 @@ export async function firstFrame(url: string): Promise<Frame> {
   const canvas = canvasFor(video);
   canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
   const blob = await toJpeg(canvas, 0.8);
+  const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
   video.removeAttribute("src");
-  return { blob, dataUrl: canvas.toDataURL("image/jpeg", 0.8), width: canvas.width, height: canvas.height };
+  return { blob, dataUrl: canvas.toDataURL("image/jpeg", 0.8), width: canvas.width, height: canvas.height, duration };
 }
 
-const CLOSE_UPS: { kind: string; label: MarkedStill["label"]; atIndex: number }[] = [
-  { kind: "pickup", label: "pickup_start", atIndex: 0 },
-  { kind: "scanner", label: "scanner_mid", atIndex: 1 },
-  { kind: "bagging", label: "bagging_end", atIndex: 3 },
+// The item pile gets the biggest close-up: it is where Gemini counts every item, including flat or thin ones.
+const CLOSE_UPS: { kind: string; label: MarkedStill["label"]; atIndex: number; maxWidth: number }[] = [
+  { kind: "pickup", label: "pickup_start", atIndex: 0, maxWidth: 1024 },
+  { kind: "scanner", label: "scanner_mid", atIndex: 1, maxWidth: 640 },
+  { kind: "bagging", label: "bagging_end", atIndex: 3, maxWidth: 640 },
 ];
 
-/** A sharp crop of one zone from the full-resolution video (up to 2× zoom, max 640 px wide). */
-function zoneCrop(video: HTMLVideoElement, zone: ZoneShape): HTMLCanvasElement | null {
+/** A sharp crop of one zone from the full-resolution video (up to 2× zoom). */
+function zoneCrop(video: HTMLVideoElement, zone: ZoneShape, maxWidth: number): HTMLCanvasElement | null {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh || zone.polygon.length < 3) return null;
@@ -92,7 +96,7 @@ function zoneCrop(video: HTMLVideoElement, zone: ZoneShape): HTMLCanvasElement |
   const sw = Math.min(vw - sx, Math.max(...xs) - Math.min(...xs) + padX * 2);
   const sh = Math.min(vh - sy, Math.max(...ys) - Math.min(...ys) + padY * 2);
   if (sw < 16 || sh < 16) return null;
-  const scale = Math.min(2, 640 / sw);
+  const scale = Math.min(2, maxWidth / sw);
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(sw * scale);
   canvas.height = Math.round(sh * scale);
@@ -115,8 +119,8 @@ export async function markedStills(url: string, zones: ZoneShape[]): Promise<Mar
     await seek(video, duration * fraction);
     for (const want of CLOSE_UPS.filter((c) => c.atIndex === index)) {
       const zone = zones.find((z) => z.kind === want.kind);
-      const crop = zone ? zoneCrop(video, zone) : null;
-      if (crop) closeUps.push({ label: want.label, blob: await toJpeg(crop, 0.8) });
+      const crop = zone ? zoneCrop(video, zone, want.maxWidth) : null;
+      if (crop) closeUps.push({ label: want.label, blob: await toJpeg(crop, want.kind === "pickup" ? 0.85 : 0.8) });
     }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     if (zones.length) {

@@ -192,9 +192,16 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               <h2 id="compare-title">Seen on camera vs. till receipt</h2>
               <p className="muted small" style={{ marginTop: 0 }}>
                 {verdict.items_seen} handled · {verdict.items_scanned} scanned · {incident.receipt.length} on receipt
-                {verdict.starting_items && verdict.starting_items.length > 0 && (
-                  <span className="seen-meta">In the item pile at the start: {verdict.starting_items.join(", ")}</span>
-                )}
+                {(() => {
+                  const pile = verdict.inventory?.length
+                    ? verdict.inventory.map((i) => i.description)
+                    : (verdict.starting_items ?? []);
+                  return pile.length > 0 ? (
+                    <span className="seen-meta">
+                      In the item pile at the start ({pile.length}): {pile.join(", ")}
+                    </span>
+                  ) : null;
+                })()}
               </p>
               <table className="compare">
                 <thead>

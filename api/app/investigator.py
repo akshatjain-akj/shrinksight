@@ -41,7 +41,8 @@ from .repo import Repo, match_sku
 from .zones import zones_context
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-06.single-pass"
+PROMPT_VERSION = "2026-10-07.flat-items"
+CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
                 "video/mov": "video/mov", "video/3gpp": "video/3gpp"}
@@ -78,8 +79,12 @@ Verdicts:
 - INCONCLUSIVE: footage is unclear or too short to decide.
 
 Method for a self-checkout (receipt first):
-1. Inventory: list in starting_items every item visible in the item pile / pickup area at the start (use the
-   item-pile close-up). Thin or small items (flower stems, pens, cards, sachets, cables) count as items.
+1. Inventory: list in inventory every separate item in the item pile / pickup area at the start, each with its
+   box, using the high-detail item-pile close-up. Count carefully:
+   - Thin, small, flat or soft objects are items: cloth or paper flowers, cards, napkins, stickers, sachets,
+     pens, cables. A flat item lying on another item can look like a pattern printed on it; list it separately.
+     Held edge-on, a flat item may look like a thin line.
+   - Objects resting on, inside, or carried together with another object are separate items. List each one.
 2. Follow every item, in order, with its clip timestamp. Match each one to the till receipt line it corresponds
    to by what it looks like (each line matches at most one item). An item is unscanned ONLY if no receipt line
    matches it. The receipt is the truth about what was scanned.
@@ -97,7 +102,8 @@ person when present. Judge the stills and the video together.
 """
 
 VERDICT_INSTRUCTION = """Return the verdict as JSON matching the schema.
-starting_items: every item in the item pile at the start (self-checkout), else an empty list.
+inventory: every separate item in the item pile at the start, each with a box (self-checkout), else empty.
+Leave starting_items empty.
 seen_items: every item you saw handled. For each: receipt_line = the number of the receipt line it matches (each
 line used at most once), or null if no line matches; scanned = true exactly when receipt_line is set; location =
 where it went relative to the scanner zone. items_seen and items_scanned must match seen_items.
@@ -221,7 +227,14 @@ def _progress(step: str, label: str, **extra) -> dict:
     return {"type": "progress", "step": step, "label": label, **extra}
 
 
-def _still_parts(types, stills: list[tuple[str, bytes]]) -> list:
+def _resolution(types, level: str, plain: bool):
+    """Per-image detail: close-ups high, other stills medium, video low. Plain mode drops it for older models."""
+    if plain:
+        return None
+    return types.PartMediaResolution(level=getattr(types.PartMediaResolutionLevel, f"MEDIA_RESOLUTION_{level}"))
+
+
+def _still_parts(types, stills: list[tuple[str, bytes]], plain: bool = False) -> list:
     if not stills:
         return []
     labels = ", ".join(label.replace("_", " ") for label, _ in stills)
@@ -231,7 +244,11 @@ def _still_parts(types, stills: list[tuple[str, bytes]]) -> list:
     )]
     for label, data in stills:
         parts.append(types.Part.from_text(text=STILL_TEXT.get(label, f"Still: {label.replace('_', ' ')}")))
-        parts.append(types.Part(inline_data=types.Blob(data=data, mime_type="image/jpeg")))
+        level = "HIGH" if label in CLOSE_UP_LABELS else "MEDIUM"
+        parts.append(types.Part(
+            inline_data=types.Blob(data=data, mime_type="image/jpeg"),
+            media_resolution=_resolution(types, level, plain),
+        ))
     return parts
 
 
@@ -262,14 +279,15 @@ def _ms(since: float) -> int:
     return round((time.monotonic() - since) * 1000)
 
 
-def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float):
+def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float, timeout_ms: int):
     """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, plain)."""
     for index, model in enumerate(models):
         plain = False
         while True:
             try:
                 result = gateway.generate(
-                    model, contents_for(plain), config_for(model, plain), deadline=deadline, retries=1
+                    model, contents_for(plain), config_for(model, plain), deadline=deadline, retries=1,
+                    timeout_ms=timeout_ms,
                 )
                 return result, model, plain
             except GeminiUnavailable as exc:
@@ -281,7 +299,8 @@ def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadli
                 has_backup = index < len(models) - 1
                 if exc.code in FALLBACK_CODES and has_backup and seconds_left(deadline) > 12:
                     backup = models[index + 1]
-                    yield _progress("fallback", f"Gemini is busy · switching to backup model {backup}", model=backup)
+                    why = {408: "is slow", 404: "isn't available", 429: "is rate limited"}.get(exc.code, "is busy")
+                    yield _progress("fallback", f"{model} {why} · switching to backup model {backup}", model=backup)
                     break
                 raise
     raise GeminiUnavailable("No Gemini model is configured.")
@@ -314,13 +333,16 @@ def investigate(
     tier1_events: list[dict] | None = None,
     stills: list[tuple[str, bytes]] | None = None,
     zones: list[ZoneHint] | None = None,
+    clip_seconds: float | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event."""
     started = time.monotonic()
     deadline = started + settings.agent_deadline_s
     models = model_chain(settings.investigator_model, settings.fallback_models)
     zones = zones or []
-    key = cache_key(clip, camera, transaction, settings.investigator_model, stills, zones)
+    long_clip = clip_seconds is not None and clip_seconds > settings.long_clip_seconds
+    fps = settings.long_clip_fps if long_clip else settings.clip_fps
+    key = cache_key(clip, camera, transaction, f"{settings.investigator_model}@{fps}fps", stills, zones)
 
     cached = repo.cache_get(key)
     if cached and (incident := repo.get_incident(cached["incident_id"])):
@@ -330,6 +352,7 @@ def investigate(
 
     timings: dict[str, int] = {}
     uploaded = None
+    stage = "preparing"
     try:
         from google.genai import types
 
@@ -346,25 +369,32 @@ def investigate(
         receipt = _receipt_lines(transaction, tool_results) if camera.kind == "checkout" else []
         context = _context_text(camera, repo, tier1_events, zones)
         marked = _still_parts(types, stills or [])
+        marked_plain = _still_parts(types, stills or [], plain=True)
         timings["lookup_ms"] = _ms(step)
 
         # ---- 2. The clip: inline bytes, or the Files API for big clips ----
         step = time.monotonic()
         if len(clip) > settings.inline_clip_bytes:
+            stage = "uploading the clip to Gemini"
             yield _progress("upload", "Uploading the clip to Gemini")
-            uploaded = gateway.upload_video(clip, mime, timeout_s=max(5.0, seconds_left(deadline) - 20))
+            uploaded = gateway.upload_video(clip, mime, timeout_s=max(5.0, min(25.0, seconds_left(deadline) - 20)))
             source = {"file_data": types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type)}
         else:
             source = {"inline_data": types.Blob(data=clip, mime_type=mime)}
         plain_video = types.Part(**source)
-        video = types.Part(**source, video_metadata=types.VideoMetadata(fps=settings.clip_fps))
+        video = types.Part(
+            **source,
+            video_metadata=types.VideoMetadata(fps=fps),
+            media_resolution=_resolution(types, "LOW", plain=False),
+        )
         timings["upload_ms"] = _ms(step)
 
         briefing = _briefing(context, receipt, tool_results, camera)
 
         def contents_for(plain: bool) -> list:
             clip_part = plain_video if plain else video
-            return [types.Content(role="user", parts=[*marked, clip_part, types.Part.from_text(text=briefing)])]
+            stills_part = marked_plain if plain else marked
+            return [types.Content(role="user", parts=[*stills_part, clip_part, types.Part.from_text(text=briefing)])]
 
         def config_for(model: str, plain: bool):
             return types.GenerateContentConfig(
@@ -372,14 +402,17 @@ def investigate(
                 response_mime_type="application/json",
                 response_schema=VerdictOut,
                 temperature=0,
-                media_resolution=None if plain else types.MediaResolution.MEDIA_RESOLUTION_LOW,
+                # Resolution is set per part (video low, stills medium, close-ups high), not for the whole request.
                 thinking_config=None if plain else thinking_config(types, model, settings.thinking_level),
             )
 
         # ---- 3. Watch once ----
         step = time.monotonic()
+        stage = "watching the clip"
         yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
-        result, model, plain = yield from _watch(gateway, models, contents_for, config_for, deadline)
+        result, model, plain = yield from _watch(
+            gateway, models, contents_for, config_for, deadline, settings.watch_timeout_ms
+        )
         timings["watch_ms"] = _ms(step)
         first, hard, soft, json_error = _parse(result.text, receipt)
         chosen, chosen_hard = (first, hard) if first is not None else (None, [])
@@ -387,6 +420,7 @@ def investigate(
         # ---- 4. One re-check, only if the answer doesn't add up and there's time ----
         if (json_error or hard or soft) and seconds_left(deadline) > 12:
             step = time.monotonic()
+            stage = "double-checking"
             yield _progress("recheck", "Double-checking against the till receipt" if receipt else "Double-checking")
             problem = (
                 f"That JSON was invalid: {json_error}\nReturn corrected JSON only." if json_error else
@@ -398,7 +432,10 @@ def investigate(
                 follow_up.append(result.content)
             follow_up.append(types.Content(role="user", parts=[types.Part.from_text(text=problem)]))
             try:
-                again = gateway.generate(model, follow_up, config_for(model, plain), deadline=deadline, retries=0)
+                again = gateway.generate(
+                    model, follow_up, config_for(model, plain), deadline=deadline, retries=0,
+                    timeout_ms=settings.watch_timeout_ms,
+                )
                 second, hard2, _, _ = _parse(again.text, receipt)
                 if second is not None and (not hard2 or chosen is None or chosen_hard):
                     chosen, chosen_hard = second, hard2
@@ -426,7 +463,14 @@ def investigate(
         repo.cache_put(key, {"incident_id": incident.id})
         yield {"type": "result", "incident": incident.model_dump(), "cached": False}
     except GeminiUnavailable as exc:
-        yield {"type": "error", "message": str(exc)}
+        elapsed = time.monotonic() - started
+        yield {
+            "type": "error",
+            "message": f"{exc} (while {stage}, after {elapsed:.0f} s)",
+            "stage": stage,
+            "code": exc.code,
+            "elapsed_s": round(elapsed, 1),
+        }
     finally:
         if uploaded is not None:
             gateway.delete_file(uploaded.name)  # clips are analysed, never kept

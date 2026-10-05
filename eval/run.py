@@ -80,7 +80,8 @@ def run_clip(entry: dict, clips_dir: Path, repo: MemoryRepo, gateway, settings: 
     zones = [ZoneHint(**zone) for zone in entry.get("zones", [])]
 
     started = time.monotonic()
-    events = list(investigate(clip, mime, camera, transaction, repo, gateway, settings, zones=zones))
+    events = list(investigate(clip, mime, camera, transaction, repo, gateway, settings, zones=zones,
+                              clip_seconds=entry.get("seconds")))
     result.latency_ms = round((time.monotonic() - started) * 1000)
     final = events[-1] if events else {"type": "error", "message": "no events"}
     if final["type"] == "error":

@@ -12,7 +12,8 @@ from .models import Camera, Zone, ZoneHint, ZonePoint, ZoneSuggestion, ZoneSugge
 SUGGEST_PROMPT_VERSION = "2026-10-05.1"
 
 KIND_GUIDE = {
-    "pickup": "where items wait before scanning (a basket, a pile, or the near end of the counter)",
+    "pickup": "where items wait before scanning (a basket, a pile, or the near end of the counter). Include every "
+    "item there, even flat, small or soft ones",
     "scanner": "where items are scanned at a self-checkout. In staged setups this may be a sheet of paper, "
     "a taped square, a box or a phone, not a real scanner",
     "bagging": "where items are put after scanning (a bag, box, tray or the far end of the counter)",

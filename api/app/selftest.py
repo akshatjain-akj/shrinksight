@@ -97,3 +97,22 @@ def check_gemini(settings: Settings) -> CheckResult:
         return detail
 
     return _timed(run)
+
+
+def check_models(settings: Settings) -> CheckResult:
+    """Confirms the main and backup models exist for this key (metadata lookups only, no generation quota)."""
+
+    def run() -> str:
+        if not settings.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY not set")
+        from .gemini import GeminiGateway, model_chain
+
+        gateway = GeminiGateway(settings.gemini_api_key, settings.gemini_timeout_ms, 0)
+        chain = model_chain(settings.investigator_model, settings.fallback_models)
+        results = [(m, *gateway.check_model(m)) for m in chain]
+        summary = " · ".join(f"{'✓' if ok else '✗'} {m}" + ("" if ok else f" ({detail})") for m, ok, detail in results)
+        if not all(ok for _, ok, _ in results):
+            raise RuntimeError(summary)
+        return summary
+
+    return _timed(run)

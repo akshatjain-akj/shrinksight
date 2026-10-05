@@ -20,6 +20,7 @@ def test_selftest_aggregates_each_check(monkeypatch):
     monkeypatch.setattr(selftest, "check_firestore", lambda s: ok)
     monkeypatch.setattr(selftest, "check_storage", lambda s: ok)
     monkeypatch.setattr(selftest, "check_gemini", lambda s: bad)
+    monkeypatch.setattr(selftest, "check_models", lambda s: ok)
 
     body = client.get("/api/selftest").json()
 

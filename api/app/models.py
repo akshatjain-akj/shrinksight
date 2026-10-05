@@ -76,6 +76,13 @@ class SeenItem(BaseModel):
     )
 
 
+class InventoryItem(BaseModel):
+    description: str = Field(description="Short visual description, e.g. 'flat cloth flower with petals'")
+    box_2d: list[int] = Field(
+        default_factory=list, description="[ymin, xmin, ymax, xmax] 0-1000 in the item-pile close-up (or first frame)"
+    )
+
+
 class TimelineEvent(BaseModel):
     t: str
     event: str
@@ -86,10 +93,12 @@ class VerdictOut(BaseModel):
     confidence: float = Field(ge=0, le=1)
     items_seen: int = Field(ge=0)
     items_scanned: int = Field(ge=0)
-    starting_items: list[str] = Field(
+    inventory: list[InventoryItem] = Field(
         default_factory=list,
-        description="Every item visible in the item pile / pickup area at the start, before any scanning",
+        description="Every separate item in the item pile at the start, each located with a box",
     )
+    # Older incidents stored the inventory as plain names; kept so they still load.
+    starting_items: list[str] = Field(default_factory=list, description="Leave empty; use inventory")
     seen_items: list[SeenItem] = []
     timeline: list[TimelineEvent] = []
     reason: str = Field(description="One or two plain sentences describing actions only")

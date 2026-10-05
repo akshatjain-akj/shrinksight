@@ -38,6 +38,11 @@ class Settings:
     # because inline data is base64-encoded and requests have a total size limit.
     inline_clip_bytes: int = 14 * 1024 * 1024
     clip_fps: int = 5
+    # Longer clips are sampled a little less densely to keep Gemini's processing time down
+    long_clip_seconds: float = 10
+    long_clip_fps: int = 3
+    # Cap on the main Gemini call, so a slow model leaves time to switch to a backup inside the budget
+    watch_timeout_ms: int = 35_000
     agent_max_tool_calls: int = 4
     # Whole-investigation budget. Firebase Hosting drops forwarded requests after ~60 s, so stay well inside it.
     agent_deadline_s: int = 50

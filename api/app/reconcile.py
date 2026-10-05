@@ -50,9 +50,17 @@ def reconcile(verdict: VerdictOut, receipt: list[ReceiptLine]) -> tuple[VerdictO
             f"You listed {out.items_seen} items but the receipt has {len(receipt)} lines. Every receipt line was "
             f"scanned, so at least {len(receipt)} items were handled. Look again for items you missed."
         )
-    if out.starting_items and out.items_seen < len(out.starting_items):
+    # Name exactly which scanned items were never found: a targeted look beats "look again".
+    for number, line in enumerate(receipt, start=1):
+        if number not in used and out.items_seen:
+            soft.append(
+                f"Receipt line {number} '{line.name}' was not matched to any item you listed. It was scanned, so it "
+                "was handled: look for it specifically. It may be flat, thin, soft, edge-on, or lying on another item."
+            )
+    counted = len(out.inventory) or len(out.starting_items)
+    if counted and out.items_seen < counted:
         soft.append(
-            f"You counted {len(out.starting_items)} items in the item pile at the start but listed only "
+            f"You counted {counted} items in the item pile at the start but listed only "
             f"{out.items_seen} handled. Follow every item from the pile."
         )
     if out.verdict == "SCAN_AVOIDANCE" and unscanned == 0:
