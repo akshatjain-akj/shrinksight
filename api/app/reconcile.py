@@ -11,7 +11,7 @@ Problems are split into:
   re-ask, then accepted.
 """
 
-from .models import InventoryItem, ReceiptLine, VerdictOut
+from .models import LEFT_BEHIND, POSITIVE_VERDICTS, TAKEN, InventoryItem, ReceiptLine, VerdictOut
 
 
 def reconcile(
@@ -74,12 +74,53 @@ def reconcile(
         )
     if out.verdict == "SCAN_AVOIDANCE" and unscanned == 0:
         hard.append("The verdict is SCAN_AVOIDANCE, but every item you listed matches a receipt line.")
-    if out.verdict == "BENIGN" and unscanned > 0:
+    taken = [i.description for i in out.seen_items if not i.scanned and i.ended_in in TAKEN]
+    if out.verdict == "BENIGN" and taken:
+        hard.append(
+            f"The verdict is BENIGN, but {len(taken)} item(s) not on the receipt ended in the bag or with the "
+            f"shopper ({', '.join(taken)}). That is SCAN_AVOIDANCE unless those items really stayed or were put back."
+        )
+    elif out.verdict == "BENIGN" and unscanned > 0:
         soft.append(
-            f"The verdict is BENIGN, but {unscanned} item(s) match no receipt line. Explain why (e.g. put back), "
-            "or change the verdict."
+            f"The verdict is BENIGN, but {unscanned} item(s) match no receipt line. Set ended_in for each (pile, "
+            "put_back, bag, hand_or_pocket) and change the verdict if any were taken."
         )
     return out, hard, soft
+
+
+def apply_receipt_rule(verdict: VerdictOut, receipt: list[ReceiptLine]) -> tuple[VerdictOut, str | None, bool]:
+    """Deterministic safety rule: Gemini can clear an alert only when the receipt agrees.
+
+    Returns (verdict, note explaining the decision, whether Gemini's verdict was overridden).
+    - Items not on the receipt that ended in the bag or with the shopper -> at least SCAN_AVOIDANCE.
+    - BENIGN with unmatched items whose destination is unclear -> INCONCLUSIVE (a person looks).
+    - BENIGN is kept only when every item matched the receipt or stayed in the pile / was put back.
+    """
+    if not receipt:
+        return verdict, None, False
+    unscanned = [i for i in verdict.seen_items if not i.scanned]
+    taken = [i.description for i in unscanned if i.ended_in in TAKEN]
+    unclear = [i.description for i in unscanned if i.ended_in not in TAKEN | LEFT_BEHIND]
+    left = [i.description for i in unscanned if i.ended_in in LEFT_BEHIND]
+
+    if taken and verdict.verdict not in POSITIVE_VERDICTS:
+        note = (f"Receipt check: {len(taken)} item(s) not on the receipt ended in the bag or with the shopper "
+                f"({', '.join(taken)}). Gemini said {verdict.verdict}, so this was flagged for review.")
+        updated = verdict.model_copy(update={"verdict": "SCAN_AVOIDANCE", "reason": f"{note} {verdict.reason}"})
+        return updated, note, True
+    if verdict.verdict == "BENIGN" and unclear:
+        note = (f"Receipt check: {len(unclear)} item(s) not on the receipt with an unclear destination "
+                f"({', '.join(unclear)}), so a person should look.")
+        return verdict.model_copy(update={"verdict": "INCONCLUSIVE", "reason": f"{note} {verdict.reason}"}), note, True
+    if verdict.verdict == "BENIGN":
+        matched = verdict.items_scanned
+        basis = f"Receipt check: all {matched} item(s) handled matched the receipt"
+        if left:
+            basis += f"; {len(left)} unmatched item(s) stayed in the pile or were put back ({', '.join(left)})"
+        return verdict, basis + ".", False
+    if taken:
+        return verdict, f"Receipt check: not on the receipt and taken: {', '.join(taken)}.", False
+    return verdict, None, False
 
 
 def _account_for_confirmed(out: VerdictOut, confirmed: list[InventoryItem]) -> list[str]:

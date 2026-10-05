@@ -28,6 +28,13 @@ const LOCATION_TEXT: Record<string, string> = {
   never_near_scanner: "never near the scanner",
 };
 
+const ENDED_TEXT: Record<string, string> = {
+  bag: "ended in the bag",
+  hand_or_pocket: "kept by the shopper",
+  pile: "stayed in the pile",
+  put_back: "was put back",
+};
+
 const TOOL_TEXT: Record<string, (args: Record<string, unknown>) => string> = {
   get_pos_transaction: (a) => `Checked the till receipt${a.lane_id ? ` (lane ${a.lane_id})` : ""}`,
   get_zone_policy: (a) => `Checked the zone policy${a.zone_id ? ` (${a.zone_id})` : ""}`,
@@ -151,6 +158,11 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               <VerdictBadge verdict={verdict.verdict} confidence={verdict.confidence} />
               <StatusPill status={current.status} />
               {incident.source === "seed" && <span className="chip">Example</span>}
+              {incident.overridden && (
+                <span className="chip tone-warning" title={incident.receipt_check ?? undefined}>
+                  Receipt check overrode Gemini’s verdict
+                </span>
+              )}
             </div>
           </div>
           {incident.est_loss_inr > 0 && (
@@ -226,9 +238,16 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                         ) : (
                           <strong style={{ color: "var(--danger)" }}>✗ Not on receipt</strong>
                         )}
-                        {item.location && item.location !== "unclear" && (
-                          <span className="seen-meta">{LOCATION_TEXT[item.location]}</span>
-                        )}
+                        {(item.location && item.location !== "unclear") || (item.ended_in && item.ended_in !== "unclear") ? (
+                          <span className="seen-meta">
+                            {[
+                              item.location && item.location !== "unclear" ? LOCATION_TEXT[item.location] : null,
+                              item.ended_in && item.ended_in !== "unclear" ? ENDED_TEXT[item.ended_in] : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -303,7 +322,12 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                 </div>
               </>
             ) : current.status === "REJECTED" ? (
-              <p style={{ margin: 0 }}>Gemini rejected this alert, so nobody was disturbed.</p>
+              <p style={{ margin: 0 }}>
+                Gemini rejected this alert, so nobody was disturbed.
+                {incident.receipt_check && (
+                  <span className="seen-meta">Why: {incident.receipt_check.replace(/^Receipt check: /, "")}</span>
+                )}
+              </p>
             ) : (
               <p style={{ margin: 0 }}>
                 {current.status === "RESOLVED_CONFIRMED" ? "Confirmed" : "Dismissed"} by staff
@@ -311,6 +335,11 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               </p>
             )}
             {error && <ErrorNotice>{error}</ErrorNotice>}
+            {incident.overridden && incident.receipt_check && (
+              <div className="notice" role="note">
+                {incident.receipt_check}
+              </div>
+            )}
             <p className="muted small" style={{ margin: 0 }}>
               Model: {incident.model}
               {incident.timings

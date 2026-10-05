@@ -12,6 +12,10 @@ IncidentStatus = Literal["NEEDS_REVIEW", "REJECTED", "RESOLVED_CONFIRMED", "RESO
 RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BYPASS"]
 ConcealmentOf = Literal["pocket", "bag", "shirt", "waistband"]
 ItemLocation = Literal["over_scanner", "beside_scanner", "hidden_under_item", "never_near_scanner", "unclear"]
+# Where an item finished up. This, not the scanner path, decides whether an unscanned item is a loss.
+EndedIn = Literal["bag", "hand_or_pocket", "pile", "put_back", "unclear"]
+TAKEN = {"bag", "hand_or_pocket"}
+LEFT_BEHIND = {"pile", "put_back"}
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 
 POSITIVE_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
@@ -76,6 +80,11 @@ class SeenItem(BaseModel):
     )
     inventory_id: int | None = Field(
         default=None, description="The # of this item in the confirmed item list, or null for an extra item"
+    )
+    ended_in: EndedIn = Field(
+        default="unclear",
+        description="Where the item finished: bag, hand_or_pocket (kept by the shopper), pile (never moved), "
+        "put_back, or unclear",
     )
 
 
@@ -154,6 +163,9 @@ class Incident(BaseModel):
     zones_used: list["ZoneHint"] = []
     # Where the time went, in ms: lookup, upload, watch, recheck, total
     timings: dict[str, int] = {}
+    # The server's receipt check: why it was rejected, or why Gemini's verdict was overridden
+    receipt_check: str | None = None
+    overridden: bool = False
 
 
 # ---------- Camera zone layouts (where the scanner etc. are in the picture) ----------
