@@ -295,7 +295,7 @@ def test_close_ups_get_high_detail_and_video_low(repo, settings):
     parts = gateway.calls[0][1][0].parts
     images = [p for p in parts if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
     video = next(p for p in parts if p.inline_data and p.inline_data.mime_type == "video/webm")
-    assert [p.media_resolution.level.name for p in images] == ["MEDIA_RESOLUTION_MEDIUM", "MEDIA_RESOLUTION_HIGH"]
+    assert [p.media_resolution.level.name for p in images] == ["MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_HIGH"]
     assert video.media_resolution.level.name == "MEDIA_RESOLUTION_LOW"
     assert gateway.calls[0][2].media_resolution is None, "no request-wide resolution that would shrink the close-ups"
 
@@ -308,15 +308,40 @@ def test_long_clips_are_sampled_at_3_fps(repo, settings):
         assert video.video_metadata.fps == fps
 
 
-def test_slow_model_hands_over_to_the_backup(repo, settings):
-    gateway = FakeGateway([GeminiUnavailable("Gemini took too long to answer (over 35 s).", 408), text(verdict_json())])
+def test_slow_model_is_not_abandoned_for_a_backup_without_time(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("Gemini took too long to answer (over 48 s).", 408)])
 
     events = run(repo, gateway, replace(settings, fallback_models=("backup-model",)),
                  transaction=repo.get_transaction("TXN-L2-2041"))
 
-    fallback = next(e for e in events if e.get("step") == "fallback")
-    assert "test-model is slow" in fallback["label"]
-    assert events[-1]["incident"]["model"] == "backup-model"
+    assert len(gateway.calls) == 1, "a timeout means the budget is spent: no doomed backup call"
+    assert events[-1]["type"] == "error" and "took too long" in events[-1]["message"]
+
+
+def test_main_call_gets_the_whole_remaining_budget(repo, settings):
+    calls = []
+
+    class Recording(FakeGateway):
+        def generate(self, model, contents, config, deadline=None, retries=None, timeout_ms=None):
+            calls.append(timeout_ms)
+            return super().generate(model, contents, config, deadline, retries, timeout_ms)
+
+    run(repo, Recording([text(verdict_json())]), settings, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    assert calls == [None], "no fixed cap on the main call; the gateway uses the time left"
+
+
+def test_close_ups_split_detail_between_pile_scanner_and_stills(repo, settings):
+    gateway = FakeGateway([text(verdict_json())])
+    jpeg = b"\xff\xd8\xff\xd9"
+
+    run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"),
+        stills=[("before", jpeg), ("pickup_start", jpeg), ("scanner_mid", jpeg), ("bagging_end", jpeg)])
+
+    levels = [p.media_resolution.level.name for p in gateway.calls[0][1][0].parts
+              if p.inline_data and p.inline_data.mime_type == "image/jpeg"]
+    assert levels == ["MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_HIGH", "MEDIA_RESOLUTION_MEDIUM",
+                      "MEDIA_RESOLUTION_MEDIUM"]
 
 
 def test_flat_and_stacked_item_rules_are_in_the_prompt():

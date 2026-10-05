@@ -229,7 +229,12 @@ export default function InvestigatePage() {
         },
         controller.signal,
         stills,
-        (f) => f < 1 && relabel(`Uploading the clip (${sizeNote}) · ${Math.round(f * 100)}%`),
+        (f) =>
+          relabel(
+            f < 1
+              ? `Uploading the clip (${sizeNote}) · ${Math.round(f * 100)}%`
+              : `Upload complete (${sizeNote}) · starting the investigation`,
+          ),
       );
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);

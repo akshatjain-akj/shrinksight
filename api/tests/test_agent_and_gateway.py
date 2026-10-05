@@ -118,9 +118,26 @@ def test_retry_honours_gemini_retry_delay(monkeypatch):
 def test_per_call_timeout_is_capped_by_the_deadline(monkeypatch):
     gw, fake, _ = gateway_with([ok_response()], monkeypatch)
 
-    gw.generate("m", ["hi"], types.GenerateContentConfig(), deadline=time.monotonic() + 10)
+    gw.generate("m", ["hi"], types.GenerateContentConfig(), deadline=time.monotonic() + 20)
 
-    assert 7_000 < fake.timeouts[0] <= 9_000
+    assert 17_000 < fake.timeouts[0] <= 19_000
+
+
+def test_never_sends_a_request_deadline_under_10_seconds(monkeypatch):
+    gw, fake, _ = gateway_with([ok_response()], monkeypatch)
+
+    gw.generate("m", ["hi"], types.GenerateContentConfig(), timeout_ms=4_000)
+
+    assert fake.timeouts[0] == 10_000, "the Gemini API rejects deadlines below 10 s"
+
+
+def test_too_little_time_left_stops_before_calling(monkeypatch):
+    gw, fake, _ = gateway_with([ok_response()], monkeypatch)
+
+    with pytest.raises(GeminiUnavailable) as err:
+        gw.generate("m", ["hi"], types.GenerateContentConfig(), deadline=time.monotonic() + 11)
+
+    assert err.value.code == 408 and fake.timeouts == []
 
 
 def test_no_waiting_when_the_retry_cannot_finish_in_time(monkeypatch):
