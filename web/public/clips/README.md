@@ -13,6 +13,6 @@ Suggested names, one per camera:
 | `aisle-4.mp4` | Aisle 4 · Spirits |
 | `aisle-2.mp4` | Aisle 2 · Snacks |
 
-Keep each file under 15 MB. Synthetic or consented footage only.
+Keep each file under 25 MB. Synthetic or consented footage only.
 
 When you are ready to keep them for judges, upload the same files to `gs://shrinksight-app-evidence/seed/` (project `shrinksight-app`, `us-central1`). Leave `seed/` off the 24-hour delete rule. Live investigation clips go in `evidence/` and can expire.

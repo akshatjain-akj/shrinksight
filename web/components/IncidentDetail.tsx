@@ -6,6 +6,13 @@ import { clipSeconds, dateTime, inr } from "@/lib/format";
 import type { Incident, SeenItem } from "@/lib/types";
 import { ErrorNotice, StatusPill, VerdictBadge } from "./ui";
 
+const LOCATION_TEXT: Record<string, string> = {
+  over_scanner: "passed over the scanner",
+  beside_scanner: "went beside the scanner",
+  hidden_under_item: "hidden under another item",
+  never_near_scanner: "never near the scanner",
+};
+
 const TOOL_TEXT: Record<string, (args: Record<string, unknown>) => string> = {
   get_pos_transaction: (a) => `Checked the till receipt${a.lane_id ? ` (lane ${a.lane_id})` : ""}`,
   get_zone_policy: (a) => `Checked the zone policy${a.zone_id ? ` (${a.zone_id})` : ""}`,
@@ -187,7 +194,16 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                         </button>{" "}
                         <span className="time">{item.t}</span>
                       </td>
-                      <td>{item.scanned ? "✓ Yes" : <strong style={{ color: "var(--danger)" }}>✗ No</strong>}</td>
+                      <td>
+                        {item.scanned ? (
+                          <>✓ {item.receipt_line ? `Line ${item.receipt_line}` : "Yes"}</>
+                        ) : (
+                          <strong style={{ color: "var(--danger)" }}>✗ Not on receipt</strong>
+                        )}
+                        {item.location && item.location !== "unclear" && (
+                          <span className="seen-meta">{LOCATION_TEXT[item.location]}</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                   {verdict.seen_items.length === 0 && (

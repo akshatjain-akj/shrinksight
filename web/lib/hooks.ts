@@ -3,6 +3,7 @@
 import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { syncLayoutsFromServer } from "./cameraConfig";
 import { db, ensureAuth } from "./firebase";
 import type { Incident, Rule, Store } from "./types";
 
@@ -76,7 +77,10 @@ export function useStore() {
   useEffect(() => {
     api
       .store()
-      .then(setStore)
+      .then((loaded) => {
+        setStore(loaded);
+        void syncLayoutsFromServer();
+      })
       .catch((err: Error) => setError(err.message));
   }, []);
   return { store, error };

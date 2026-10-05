@@ -5,6 +5,7 @@ exponential backoff and returns a small `GenResult`. Tests swap in a fake gatewa
 scripted `GenResult`s, so agent logic is tested without network or quota.
 """
 
+import io
 import random
 import time
 from dataclasses import dataclass, field
@@ -35,8 +36,17 @@ class GenResult:
     content: Any = None
 
 
+@dataclass
+class UploadedFile:
+    name: str
+    uri: str
+    mime_type: str
+
+
 class Gateway(Protocol):
     def generate(self, model: str, contents: list, config: Any) -> GenResult: ...
+    def upload_video(self, data: bytes, mime: str) -> UploadedFile: ...
+    def delete_file(self, name: str) -> None: ...
 
 
 class GeminiGateway:
@@ -67,6 +77,32 @@ class GeminiGateway:
                     raise GeminiUnavailable(f"Gemini request failed: {type(exc).__name__}") from exc
             attempt += 1
             time.sleep(min(8.0, 2**attempt) + random.uniform(0, 0.5))
+
+
+    def upload_video(self, data: bytes, mime: str, timeout_s: float = 60) -> UploadedFile:
+        """Uploads a large clip via the Files API and waits until Gemini has processed it."""
+        try:
+            config = self._types.UploadFileConfig(mime_type=mime)
+            uploaded = self._client.files.upload(file=io.BytesIO(data), config=config)
+            deadline = time.monotonic() + timeout_s
+            while uploaded.state and uploaded.state.name == "PROCESSING":
+                if time.monotonic() > deadline:
+                    raise GeminiUnavailable("Gemini took too long to process the uploaded clip.")
+                time.sleep(1.5)
+                uploaded = self._client.files.get(name=uploaded.name)
+        except GeminiUnavailable:
+            raise
+        except Exception as exc:
+            raise GeminiUnavailable(f"Uploading the clip to Gemini failed: {type(exc).__name__}") from exc
+        if uploaded.state and uploaded.state.name == "FAILED":
+            raise GeminiUnavailable("Gemini couldn't process this video file. Try MP4 (H.264).")
+        return UploadedFile(name=uploaded.name, uri=uploaded.uri, mime_type=uploaded.mime_type or mime)
+
+    def delete_file(self, name: str) -> None:
+        try:
+            self._client.files.delete(name=name)
+        except Exception:
+            pass  # files expire on their own after 48 h; deletion is best effort
 
 
 def _to_result(response: Any) -> GenResult:

@@ -11,6 +11,7 @@ VerdictKind = Literal["SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH", "BENIGN", 
 IncidentStatus = Literal["NEEDS_REVIEW", "REJECTED", "RESOLVED_CONFIRMED", "RESOLVED_DISMISSED"]
 RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BYPASS"]
 ConcealmentOf = Literal["pocket", "bag", "shirt", "waistband"]
+ItemLocation = Literal["over_scanner", "beside_scanner", "hidden_under_item", "never_near_scanner", "unclear"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 
 POSITIVE_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
@@ -63,9 +64,15 @@ class Transaction(BaseModel):
 class SeenItem(BaseModel):
     t: str = Field(description="Clip-relative timestamp, e.g. '00:06.4'")
     description: str = Field(description="Short visual description of the item, no brand guesses")
-    scanned: bool = Field(description="True only if the item clearly passed over the scanner zone")
+    scanned: bool = Field(description="True if the item matches a receipt line (it was rung up)")
     box_2d: list[int] = Field(
         default_factory=list, description="[ymin, xmin, ymax, xmax] normalised 0-1000 at time t"
+    )
+    receipt_line: int | None = Field(
+        default=None, description="1-based number of the till receipt line this item matches, or null if none"
+    )
+    location: ItemLocation = Field(
+        default="unclear", description="Where the item went relative to the marked scanner zone"
     )
 
 
@@ -122,6 +129,59 @@ class Incident(BaseModel):
     latency_ms: int | None = None
     tool_calls: list[ToolCallLog] = []
     reviewed_at: str | None = None
+    zones_used: list["ZoneHint"] = []
+
+
+# ---------- Camera zone layouts (where the scanner etc. are in the picture) ----------
+class ZonePoint(BaseModel):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
+
+class ZoneHint(BaseModel):
+    """One marked zone in a camera's picture. Points are normalised 0-1, origin top-left."""
+
+    zone_id: str = Field(max_length=40)
+    kind: ZoneKind
+    polygon: list[ZonePoint] = Field(min_length=3, max_length=12)
+    description: str = Field(default="", max_length=120)
+
+    def box_2d(self) -> list[int]:
+        """Bounding box in Gemini's [ymin, xmin, ymax, xmax] 0-1000 format."""
+        xs = [p.x for p in self.polygon]
+        ys = [p.y for p in self.polygon]
+        return [round(min(ys) * 1000), round(min(xs) * 1000), round(max(ys) * 1000), round(max(xs) * 1000)]
+
+
+class CameraLayout(BaseModel):
+    camera_id: str
+    zones: list[ZoneHint] = Field(default_factory=list, max_length=8)
+    updated_at: str
+
+
+class ZoneSuggestion(BaseModel):
+    zone_id: str
+    found: bool = Field(description="False if this area isn't visible in the frame")
+    box_2d: list[int] = Field(default_factory=list, description="[ymin, xmin, ymax, xmax] normalised 0-1000")
+    description: str = Field(default="", description="Short visual description, e.g. 'white paper square'")
+
+
+class ZoneSuggestionsOut(BaseModel):
+    zones: list[ZoneSuggestion]
+
+
+def validate_zone_hints(hints: list[ZoneHint], camera: "Camera", zones: list[Zone]) -> list[str]:
+    known = {z.id: z for z in zones if z.id in camera.zone_ids}
+    problems = []
+    for hint in hints:
+        zone = known.get(hint.zone_id)
+        if zone is None:
+            problems.append(f"Zone {hint.zone_id} isn't part of {camera.name}.")
+        elif zone.kind != hint.kind:
+            problems.append(f"Zone {hint.zone_id} is a {zone.kind}, not a {hint.kind}.")
+    if len({h.zone_id for h in hints}) != len(hints):
+        problems.append("Each zone can only be marked once.")
+    return problems
 
 
 def status_for(verdict: VerdictKind) -> IncidentStatus:
@@ -174,3 +234,6 @@ def validate_rule_spec(spec: RuleSpec, zones: dict[str, Zone]) -> list[str]:
         if value is not None and not _HHMM.match(value):
             problems.append(f"'{value}' isn't a valid HH:MM time.")
     return problems
+
+
+Incident.model_rebuild()

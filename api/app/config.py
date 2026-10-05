@@ -33,7 +33,10 @@ class Settings:
     gemini_selftest_cooldown_s: int = 60
 
     # Investigation limits
-    max_clip_bytes: int = 15 * 1024 * 1024
+    max_clip_bytes: int = 25 * 1024 * 1024
+    # Bigger clips go through the Gemini Files API (uploaded once, deleted after) instead of inline bytes,
+    # because inline data is base64-encoded and requests have a total size limit.
+    inline_clip_bytes: int = 14 * 1024 * 1024
     clip_fps: int = 5
     agent_max_tool_calls: int = 4
     agent_deadline_s: int = 45
@@ -42,6 +45,9 @@ class Settings:
     per_ip_per_minute: int = field(default_factory=lambda: _env_int("PER_IP_PER_MINUTE", 6))
     daily_investigations: int = field(default_factory=lambda: _env_int("DAILY_INVESTIGATIONS", 40))
     daily_rule_compiles: int = field(default_factory=lambda: _env_int("DAILY_RULE_COMPILES", 100))
+    daily_zone_suggestions: int = field(default_factory=lambda: _env_int("DAILY_ZONE_SUGGESTIONS", 30))
+    daily_layout_saves: int = field(default_factory=lambda: _env_int("DAILY_LAYOUT_SAVES", 200))
+    max_frame_bytes: int = 2 * 1024 * 1024
 
     # "firestore" on Cloud Run; "memory" for local runs without Google credentials (data resets on restart)
     repo_backend: str = field(default_factory=lambda: _env("REPO_BACKEND", "firestore"))

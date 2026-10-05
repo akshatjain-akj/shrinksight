@@ -1,0 +1,56 @@
+{
+  "_about": "Ground truth for eval/run.py. One entry per clip in the clips folder. receipt = what the till actually scanned (prices can be 0). expected.unscanned = items handled but NOT on the receipt. zones (optional) = the boxes you marked; copy them from the Investigate page ('Copy zones for eval'). Replace every FILL_ME before running that clip.",
+  "clips": [
+    {
+      "file": "clip1.mp4",
+      "camera_id": "cam-sco-1",
+      "angle": "left",
+      "lighting": "normal",
+      "receipt": [
+        { "name": "bottle", "price_inr": 0 },
+        { "name": "fruit", "price_inr": 0 },
+        { "name": "biscuit", "price_inr": 0 },
+        { "name": "flower", "price_inr": 0 },
+        { "name": "box", "price_inr": 0 }
+      ],
+      "expected": { "verdict": "BENIGN", "items_seen": 5, "unscanned": [] }
+    },
+    {
+      "file": "clip2.mp4",
+      "camera_id": "cam-sco-1",
+      "angle": "left",
+      "lighting": "normal",
+      "_check": "Assumes the same five items as clip1. Fix the receipt if clip2 used different items.",
+      "receipt": [
+        { "name": "bottle", "price_inr": 0 },
+        { "name": "fruit", "price_inr": 0 },
+        { "name": "flower", "price_inr": 0 },
+        { "name": "box", "price_inr": 0 }
+      ],
+      "expected": { "verdict": "SCAN_AVOIDANCE", "items_seen": 5, "unscanned": ["biscuit"] }
+    },
+    {
+      "file": "clip3.mp4",
+      "camera_id": "cam-sco-1",
+      "angle": "left",
+      "lighting": "normal",
+      "_check": "Assumes clip1's order (bottle, fruit, biscuit, flower, box), so items 2-4 = fruit, biscuit, flower were skipped. Fix if not.",
+      "receipt": [
+        { "name": "bottle", "price_inr": 0 },
+        { "name": "box", "price_inr": 0 }
+      ],
+      "expected": { "verdict": "SCAN_AVOIDANCE", "items_seen": 5, "unscanned": ["fruit", "biscuit", "flower"] }
+    },
+    {
+      "file": "clip4.mp4",
+      "camera_id": "cam-sco-1",
+      "angle": "left",
+      "lighting": "normal",
+      "receipt": [
+        { "name": "FILL_ME first item", "price_inr": 0 },
+        { "name": "FILL_ME second item", "price_inr": 0 }
+      ],
+      "expected": { "verdict": "BENIGN", "items_seen": 2, "unscanned": [] }
+    }
+  ]
+}

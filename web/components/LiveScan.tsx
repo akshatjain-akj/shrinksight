@@ -14,8 +14,30 @@ const BONES: [number, number][] = [
 ];
 
 type Landmark = { x: number; y: number; visibility?: number };
+type FaceBox = { originX: number; originY: number; width: number; height: number };
+
+/** Pixelates one face on the overlay canvas, which sits exactly on top of the video. */
+function pixelateFace(ctx: CanvasRenderingContext2D, scratch: CanvasRenderingContext2D, video: HTMLVideoElement, face: FaceBox) {
+  const padX = face.width * 0.25;
+  const padY = face.height * 0.35;
+  const sx = Math.max(0, face.originX - padX);
+  const sy = Math.max(0, face.originY - padY);
+  const sw = Math.min(video.videoWidth - sx, face.width + padX * 2);
+  const sh = Math.min(video.videoHeight - sy, face.height + padY * 2);
+  if (sw < 4 || sh < 4) return;
+  scratch.canvas.width = Math.max(1, Math.round(sw / 14));
+  scratch.canvas.height = Math.max(1, Math.round(sh / 14));
+  scratch.drawImage(video, sx, sy, sw, sh, 0, 0, scratch.canvas.width, scratch.canvas.height);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(scratch.canvas, sx, sy, sw, sh);
+  ctx.restore();
+}
 
 let modelsPromise: Promise<VisionModels> | null = null;
+// Models are shared by every tile; MediaPipe needs strictly increasing timestamps per model.
+let lastStamp = 0;
+const nextStamp = () => (lastStamp = Math.max(performance.now(), lastStamp + 1));
 let modelUsers = 0;
 
 function acquireModels(): Promise<VisionModels> {
@@ -120,7 +142,12 @@ export default function LiveScan({
     const hud = hudRef.current;
     if (!video || !canvas || !hud) return;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const scratch = document.createElement("canvas").getContext("2d");
+    if (!ctx || !scratch) return;
+    // Privacy first: the raw picture stays blurred until face detection is running on it.
+    video.style.filter = "blur(18px)";
+    let faces: FaceBox[] = [];
+    let facesReady = false;
 
     const active = cameraRef.current;
     const shapes = polygonsForCamera(active.id, zonesRef.current.filter((zone) => active.zone_ids.includes(zone.id)));
@@ -157,16 +184,30 @@ export default function LiveScan({
       const now = performance.now();
       try {
         if (frame % 2 === 0) {
-          const found = models.pose.detectForVideo(video, now).landmarks ?? [];
+          const found = models.pose.detectForVideo(video, nextStamp()).landmarks ?? [];
           lastPoses = found.filter((pose) => posePeople([pose], 0).length > 0);
+        }
+        if (frame % 3 === 1 || !facesReady) {
+          faces = (models.face.detectForVideo(video, nextStamp()).detections ?? []).flatMap((d) =>
+            d.boundingBox
+              ? [{ originX: d.boundingBox.originX, originY: d.boundingBox.originY, width: d.boundingBox.width, height: d.boundingBox.height }]
+              : [],
+          );
+          if (!facesReady) {
+            facesReady = true;
+            video.style.filter = "";
+          }
         }
       } catch {
         hud.textContent = "Scan blocked";
+        video.style.filter = "blur(18px)"; // fail safe: never show unblurred faces
+        facesReady = false;
         return;
       }
       tracker.setWatchHealth(loadCameraConfigs()[active.id]?.detection.healthHazard !== false);
       const watched = tracker.update(posePeople(lastPoses, now - started), now - started);
       ctx.clearRect(0, 0, width, height);
+      for (const face of faces) pixelateFace(ctx, scratch, video, face);
       ctx.lineWidth = Math.max(2, width / 320);
       for (const zone of shapes) {
         ctx.strokeStyle = zone.kind === "scanner" ? "#fbbf24" : zone.kind === "bagging" ? "#38bdf8" : "#34d399";

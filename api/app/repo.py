@@ -10,7 +10,7 @@ import time
 from typing import Any, Protocol
 
 from . import seed
-from .models import Camera, Incident, Rule, Sku, Transaction, Zone
+from .models import Camera, CameraLayout, Incident, Rule, Sku, Transaction, Zone
 
 
 class Repo(Protocol):
@@ -30,6 +30,9 @@ class Repo(Protocol):
     def cache_get(self, key: str) -> dict | None: ...
     def cache_put(self, key: str, value: dict) -> None: ...
     def incr(self, key: str, ttl_s: int) -> int: ...
+    def layouts(self) -> dict[str, CameraLayout]: ...
+    def get_layout(self, camera_id: str) -> CameraLayout | None: ...
+    def save_layout(self, layout: CameraLayout) -> None: ...
 
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -141,6 +144,16 @@ class MemoryRepo:
             counters[key] = {"n": counters.get(key, {}).get("n", 0) + 1}
             return counters[key]["n"]
 
+    def layouts(self) -> dict[str, CameraLayout]:
+        return {d["camera_id"]: CameraLayout(**d) for d in self._all("layouts")}
+
+    def get_layout(self, camera_id: str) -> CameraLayout | None:
+        doc = self._get("layouts", camera_id)
+        return CameraLayout(**doc) if doc else None
+
+    def save_layout(self, layout: CameraLayout) -> None:
+        self._put("layouts", layout.camera_id, layout.model_dump())
+
 
 class FirestoreRepo:
     def __init__(self, project: str | None = None):
@@ -234,3 +247,13 @@ class FirestoreRepo:
         ref = self._db.collection("counters").document(key)
         ref.set({"n": self._fs.Increment(1), "expire_at": time.time() + ttl_s}, merge=True)
         return int((ref.get().to_dict() or {}).get("n", 1))
+
+    def layouts(self) -> dict[str, CameraLayout]:
+        return {d["camera_id"]: CameraLayout(**d) for d in self._all("layouts")}
+
+    def get_layout(self, camera_id: str) -> CameraLayout | None:
+        doc = self._get("layouts", camera_id)
+        return CameraLayout(**doc) if doc else None
+
+    def save_layout(self, layout: CameraLayout) -> None:
+        self._put("layouts", layout.camera_id, layout.model_dump())

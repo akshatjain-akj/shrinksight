@@ -7,12 +7,16 @@ import IncidentDetail from "@/components/IncidentDetail";
 import ProgressSteps, { type Step } from "@/components/ProgressSteps";
 import ReceiptEditor, { emptyLine } from "@/components/ReceiptEditor";
 import { ErrorNotice, Skeletons } from "@/components/ui";
-import { api, investigateStream, type InvestigateMeta } from "@/lib/api";
+import ZoneMarker, { type ZoneState } from "@/components/ZoneMarker";
+import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
+import { hasSavedLayout, polygonsForCamera, savedDescriptions, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { inr } from "@/lib/format";
+import { firstFrame, markedStills, type Frame } from "@/lib/frames";
 import { useStore } from "@/lib/hooks";
+import { shapesToHints } from "@/lib/tier1/zones";
 import type { Incident, ReceiptLine, Transaction } from "@/lib/types";
 
-const MAX_BYTES = 15 * 1024 * 1024;
+const MAX_BYTES = 25 * 1024 * 1024;
 const CUSTOM = "custom";
 
 export default function InvestigatePage() {
@@ -30,10 +34,47 @@ export default function InvestigatePage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ incident: Incident; cached: boolean } | null>(null);
+  const [frame, setFrame] = useState<Frame | null>(null);
+  const [frameError, setFrameError] = useState<string | null>(null);
+  const [zoneState, setZoneState] = useState<ZoneState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const camera = store?.cameras.find((c) => c.id === cameraId);
   const isCheckout = camera?.kind === "checkout";
+
+  // The camera's saved layout is the starting point; boxes are only sent once they're real.
+  useEffect(() => {
+    if (!camera || !store) return;
+    let cancelled = false;
+    setZoneState(null);
+    void syncLayoutsFromServer().then(() => {
+      if (cancelled) return;
+      const zones = store.zones.filter((z) => camera.zone_ids.includes(z.id));
+      const saved = hasSavedLayout(camera.id);
+      setZoneState({
+        shapes: polygonsForCamera(camera.id, zones),
+        descriptions: savedDescriptions(camera.id),
+        send: saved,
+        saved,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [camera, store]);
+
+  useEffect(() => {
+    if (!clipUrl) return;
+    let cancelled = false;
+    setFrame(null);
+    setFrameError(null);
+    firstFrame(clipUrl)
+      .then((f) => !cancelled && setFrame(f))
+      .catch(() => !cancelled && setFrameError("Couldn’t read a frame from this clip. You can still investigate it without zones."));
+    return () => {
+      cancelled = true;
+    };
+  }, [clipUrl]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => () => {
@@ -54,7 +95,7 @@ export default function InvestigatePage() {
     if (blob.size > MAX_BYTES) {
       setClip(null);
       setClipUrl(null);
-      setClipError(`That clip is ${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 15 MB. Trim it or record a shorter one.`);
+      setClipError(`That clip is ${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB. Trim it or record a shorter one.`);
       return;
     }
     setClip(blob);
@@ -67,7 +108,11 @@ export default function InvestigatePage() {
 
   const run = async () => {
     if (!camera || !clip) return;
-    const meta: InvestigateMeta = { camera_id: camera.id };
+    const sendZones = Boolean(zoneState?.send);
+    const meta: InvestigateMeta = {
+      camera_id: camera.id,
+      zones: sendZones && zoneState ? shapesToHints(zoneState.shapes, zoneState.descriptions) : [],
+    };
     if (isCheckout) {
       if (receiptChoice === CUSTOM) meta.receipt = customLines.map((l) => ({ name: l.name.trim(), price_inr: l.price_inr }));
       else meta.transaction_id = receiptChoice;
@@ -78,7 +123,14 @@ export default function InvestigatePage() {
     setRunning(true);
     setError(null);
     setResult(null);
-    setSteps([{ label: "Uploading the clip", done: false }]);
+    setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
+    let stills: MarkedStill[] = [];
+    try {
+      if (clipUrl) stills = await markedStills(clipUrl, sendZones && zoneState ? zoneState.shapes : []);
+    } catch {
+      stills = []; // some codecs can't be seeked in the browser; the clip alone still works
+    }
+    setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label: "Uploading the clip", done: false }]);
     try {
       await investigateStream(
         clip,
@@ -94,6 +146,7 @@ export default function InvestigatePage() {
           }
         },
         controller.signal,
+        stills,
       );
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
@@ -108,6 +161,7 @@ export default function InvestigatePage() {
     setError(null);
     setClip(null);
     setClipUrl(null);
+    setFrame(null);
   };
 
   if (result) {
@@ -179,7 +233,7 @@ export default function InvestigatePage() {
               </div>
               {source === "upload" ? (
                 <div className="field">
-                  <label htmlFor="clip-file">Video file (MP4, WebM or MOV, up to 15 MB, ideally 5–20 s)</label>
+                  <label htmlFor="clip-file">Video file (MP4, WebM or MOV, up to 25 MB, ideally 5–20 s)</label>
                   <input
                     id="clip-file"
                     type="file"
@@ -199,9 +253,20 @@ export default function InvestigatePage() {
               )}
             </section>
 
+            {clip && camera && zoneState && (
+              <section className="card stack" aria-labelledby="step-zones">
+                <h2 id="step-zones">3 · {isCheckout ? "Where are the scanner and bagging area?" : "Where are the zones?"}</h2>
+                <p className="muted small" style={{ margin: 0 }}>
+                  Works from any camera angle: mark where things are in <em>this</em> picture, or let Gemini suggest it.
+                  The zones are drawn on the stills Gemini sees.
+                </p>
+                <ZoneMarker camera={camera} frame={frame} frameError={frameError} state={zoneState} onChange={setZoneState} />
+              </section>
+            )}
+
             {isCheckout && (
               <section className="card stack" aria-labelledby="step3">
-                <h2 id="step3">3 · What did the till scan?</h2>
+                <h2 id="step3">{clip ? "4" : "3"} · What did the till scan?</h2>
                 <div className="field">
                   <label htmlFor="receipt-choice">Till receipt for this visit</label>
                   <select id="receipt-choice" value={receiptChoice} onChange={(e) => setReceiptChoice(e.target.value)}>
@@ -223,7 +288,7 @@ export default function InvestigatePage() {
           </div>
 
           <aside className="card stack" aria-labelledby="run-title" style={{ position: "sticky", top: "5rem" }}>
-            <h2 id="run-title">{isCheckout ? "4" : "3"} · Investigate</h2>
+            <h2 id="run-title">{(isCheckout ? 4 : 3) + (clip ? 1 : 0)} · Investigate</h2>
             <label className="row" style={{ alignItems: "flex-start", fontWeight: 400 }}>
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 4 }} />
               <span className="small">

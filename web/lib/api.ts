@@ -1,5 +1,16 @@
 import { appCheckToken } from "./firebase";
-import type { Incident, InvestigationEvent, ReceiptLine, Rule, RuleSpec, Store, Transaction } from "./types";
+import type {
+  CameraLayout,
+  Incident,
+  InvestigationEvent,
+  ReceiptLine,
+  Rule,
+  RuleSpec,
+  Store,
+  Transaction,
+  ZoneHint,
+  ZoneSuggestion,
+} from "./types";
 
 // Same-origin in production (Firebase Hosting rewrites /api/** to Cloud Run).
 // Local dev: NEXT_PUBLIC_API_BASE=http://localhost:8080
@@ -64,6 +75,23 @@ export const api = {
     request<Rule>("/api/rules", { method: "POST", body: JSON.stringify({ source_text, spec }) }),
   setRuleEnabled: (id: string, enabled: boolean) =>
     request<Rule>(`/api/rules/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+  layouts: () => request<Record<string, CameraLayout>>("/api/layouts"),
+  saveLayout: (cameraId: string, zones: ZoneHint[]) =>
+    request<CameraLayout>(`/api/layouts/${encodeURIComponent(cameraId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ zones }),
+    }),
+  /** Sends one JPEG frame; Gemini suggests where each of this camera's zones is. */
+  suggestZones: async (cameraId: string, frame: Blob) => {
+    const token = await appCheckToken();
+    const res = await fetch(`${API_BASE}/api/layouts/${encodeURIComponent(cameraId)}/suggest`, {
+      method: "POST",
+      body: frame,
+      headers: { "content-type": frame.type || "image/jpeg", ...(token ? { "x-firebase-appcheck": token } : {}) },
+    });
+    if (!res.ok) throw await errorFrom(res);
+    return res.json() as Promise<{ camera_id: string; zones: ZoneSuggestion[]; cached: boolean }>;
+  },
 };
 
 export interface MarkedStill {
@@ -73,6 +101,8 @@ export interface MarkedStill {
 
 export interface InvestigateMeta {
   camera_id: string;
+  /** Zones for this clip. Omit to use the camera's saved layout; [] sends none. */
+  zones?: ZoneHint[];
   transaction_id?: string;
   receipt?: ReceiptLine[];
   tier1_events?: {

@@ -16,10 +16,21 @@ from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
 from .investigator import investigate, normalise_mime
-from .models import POSITIVE_VERDICTS, ReceiptLine, Rule, RuleSpec, Transaction, validate_rule_spec
+from .models import (
+    POSITIVE_VERDICTS,
+    CameraLayout,
+    ReceiptLine,
+    Rule,
+    RuleSpec,
+    Transaction,
+    ZoneHint,
+    validate_rule_spec,
+    validate_zone_hints,
+)
 from .repo import FirestoreRepo, MemoryRepo, Repo
 from .rules_compiler import compile_rule
 from .seed import STORE_NAME
+from .zones import suggest_zones
 
 settings = get_settings()
 
@@ -137,6 +148,61 @@ def clip_url(camera_id: str) -> dict:
     except Exception as exc:
         raise HTTPException(503, "Could not sign the clip URL") from exc
     return {"camera_id": camera_id, "url": url, "expires_in": SIGNED_URL_MINUTES * 60}
+
+
+# ---------- camera zone layouts ----------
+def _camera_or_404(repo: Repo, camera_id: str):
+    camera = next((c for c in repo.cameras() if c.id == camera_id), None)
+    if camera is None:
+        raise HTTPException(404, "Unknown camera")
+    return camera
+
+
+@app.get("/api/layouts")
+def layouts() -> dict:
+    """Saved zone layouts for every camera, keyed by camera id. Cameras never marked are absent."""
+    return {camera_id: layout.model_dump() for camera_id, layout in get_repo().layouts().items()}
+
+
+class LayoutIn(BaseModel):
+    zones: list[ZoneHint] = Field(max_length=8)
+
+
+@app.put("/api/layouts/{camera_id}")
+def save_layout(camera_id: str, body: LayoutIn, request: Request) -> dict:
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    problems = validate_zone_hints(body.zones, camera, repo.zones())
+    if problems:
+        raise HTTPException(400, " ".join(problems))
+    enforce_limits(request, repo, "layouts", cfg().daily_layout_saves)
+    layout = CameraLayout(camera_id=camera.id, zones=body.zones, updated_at=_now_iso())
+    repo.save_layout(layout)
+    return layout.model_dump()
+
+
+IMAGE_MIME = {"image/jpeg": "image/jpeg", "image/png": "image/png"}
+
+
+@app.post("/api/layouts/{camera_id}/suggest")
+async def suggest_layout(camera_id: str, request: Request) -> dict:
+    """Body: one JPEG/PNG frame from the camera. Gemini suggests where each zone of this camera is."""
+    enforce_app_check(request)
+    mime = IMAGE_MIME.get(request.headers.get("content-type", "").split(";")[0].strip().lower())
+    if mime is None:
+        raise HTTPException(415, "Send a JPEG or PNG frame.")
+    repo = await asyncio.to_thread(get_repo)
+    camera = await asyncio.to_thread(_camera_or_404, repo, camera_id)
+    await asyncio.to_thread(enforce_limits, request, repo, "zones", cfg().daily_zone_suggestions)
+    image = await _read_clip(request, cfg().max_frame_bytes)
+    gateway = get_gateway()
+    try:
+        suggestions, cached = await asyncio.to_thread(
+            suggest_zones, image, mime, camera, repo.zones(), gateway, cfg().gemini_model, repo
+        )
+    except GeminiUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"camera_id": camera.id, "zones": [s.model_dump() for s in suggestions], "cached": cached}
 
 
 # ---------- incidents ----------
@@ -269,6 +335,8 @@ class InvestigateMeta(BaseModel):
     transaction_id: str | None = Field(default=None, max_length=40)
     receipt: list[ReceiptLine] | None = Field(default=None, max_length=30)
     tier1_events: list[Tier1EventIn] = Field(default_factory=list, max_length=12)
+    # Zones marked for this clip. None = use the camera's saved layout; [] = send no zones.
+    zones: list[ZoneHint] | None = Field(default=None, max_length=8)
 
 
 def enforce_app_check(request: Request) -> None:
@@ -370,6 +438,15 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             if transaction is None:
                 raise HTTPException(400, "Unknown transaction")
 
+    if meta.zones is None:
+        saved = await asyncio.to_thread(repo.get_layout, camera.id)
+        zones = saved.zones if saved else []
+    else:
+        zones = meta.zones
+        problems = validate_zone_hints(zones, camera, await asyncio.to_thread(repo.zones))
+        if problems:
+            raise HTTPException(400, " ".join(problems))
+
     await asyncio.to_thread(enforce_limits, request, repo, "investigate", cfg().daily_investigations)
     if marked:
         clip, mime, stills = await _read_marked(request, cfg().max_clip_bytes)
@@ -385,6 +462,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             clip, mime, camera, transaction, repo, gateway, cfg(),
             tier1_events=[e.model_dump() for e in meta.tier1_events],
             stills=stills,
+            zones=zones,
         ):
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 

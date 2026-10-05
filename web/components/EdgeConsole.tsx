@@ -6,7 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, investigateStream } from "@/lib/api";
 import { useRules, useStore } from "@/lib/hooks";
 import type { Tier1Hit } from "@/lib/tier1/engine.ts";
-import { polygonsForCamera } from "@/lib/cameraConfig";
+import { hasSavedLayout, polygonsForCamera, savedDescriptions, syncLayoutsFromServer } from "@/lib/cameraConfig";
+import { drawZoneOutlines, shapesToHints } from "@/lib/tier1/zones";
 import { personBox, type Pt, type ZoneShape } from "@/lib/tier1/geometry.ts";
 import { PersonTracker } from "@/lib/tier1/tracks.ts";
 import { Tier1Engine } from "@/lib/tier1/engine.ts";
@@ -168,6 +169,9 @@ export default function EdgeConsole() {
   const trackerRef = useRef<PersonTracker | null>(null);
   const checkTillRef = useRef(true);
   const zonesRef = useRef<ZoneShape[]>([]);
+  // Saved zones are burned into the blurred clip and stills, and sent as hints. Presets never are.
+  const burnZonesRef = useRef(false);
+  const zoneDescriptionsRef = useRef<Record<string, string>>({});
   const headerRef = useRef<Blob | null>(null);
   const clustersRef = useRef<Blob[]>([]);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -187,6 +191,10 @@ export default function EdgeConsole() {
   const stillCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const camera = store?.cameras.find((c) => c.id === cameraId) ?? store?.cameras[0];
+
+  /** Zones that were burned into this clip, so Gemini also gets them as exact coordinates. */
+  const zoneMeta = () =>
+    burnZonesRef.current ? { zones: shapesToHints(zonesRef.current, zoneDescriptionsRef.current) } : { zones: [] };
 
   useEffect(() => {
     consentRef.current = consent;
@@ -225,11 +233,22 @@ export default function EdgeConsole() {
 
   useEffect(() => {
     if (!camera || !store) return;
-    const zones = polygonsForCamera(camera.id, store.zones.filter((z) => camera.zone_ids.includes(z.id)));
-    zonesRef.current = zones;
-    const tracker = new PersonTracker(() => new Tier1Engine(camera.kind, zones, rules ?? []));
+    let current = true;
+    const applyZones = () => {
+      zonesRef.current = polygonsForCamera(camera.id, store.zones.filter((z) => camera.zone_ids.includes(z.id)));
+      burnZonesRef.current = hasSavedLayout(camera.id);
+      zoneDescriptionsRef.current = savedDescriptions(camera.id);
+    };
+    applyZones();
+    // Pick up layouts saved on another device.
+    void syncLayoutsFromServer().then(() => current && applyZones());
+    // Engines are created per tracked person, so reading zonesRef here picks up synced layouts too.
+    const tracker = new PersonTracker(() => new Tier1Engine(camera.kind, zonesRef.current, rules ?? []));
     tracker.setLaneLeave(checkTillRef.current && camera.kind === "checkout");
     trackerRef.current = tracker;
+    return () => {
+      current = false;
+    };
   }, [camera, store, rules]);
 
   useEffect(() => {
@@ -317,6 +336,14 @@ export default function EdgeConsole() {
       const tick = watched.tick;
       phaseRef.current = { reachAtMs: tick.reachAtMs, holdAtMs: tick.holdAtMs };
       for (const mark of watched.boxes) strokePersonBox(btx, mark.box, fit, srcW, srcH);
+      if (burnZonesRef.current) {
+        drawZoneOutlines(
+          btx,
+          zonesRef.current,
+          (p) => [fit.ox + p.x * srcW * fit.scale, fit.oy + p.y * srcH * fit.scale],
+          0.8,
+        );
+      }
       if (now - lastSnapRef.current >= 400) {
         lastSnapRef.current = now;
         const board = stillCanvasRef.current;
@@ -440,7 +467,7 @@ export default function EdgeConsole() {
       try {
         await investigateStream(
           blob,
-          { camera_id: camera.id, tier1_events: payload.hits },
+          { camera_id: camera.id, tier1_events: payload.hits, ...zoneMeta() },
           (event) => {
             if (event.type === "result") {
               holdScoreRef.current = false;
@@ -628,7 +655,7 @@ export default function EdgeConsole() {
     setStatus((s) => ({ ...s, detail: "Gemini is reviewing the blurred clip" }));
     void investigateStream(
       blob,
-      { camera_id: camera?.id ?? cameraId, tier1_events: payload.hits },
+      { camera_id: camera?.id ?? cameraId, tier1_events: payload.hits, ...zoneMeta() },
       (event) => {
         if (event.type === "result") {
           holdScoreRef.current = false;
