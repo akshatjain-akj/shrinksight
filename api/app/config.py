@@ -33,7 +33,10 @@ class Settings:
     gemini_selftest_cooldown_s: int = 60
 
     # Investigation limits
-    max_clip_bytes: int = 15 * 1024 * 1024
+    max_clip_bytes: int = 25 * 1024 * 1024
+    # Bigger clips go through the Gemini Files API (uploaded once, deleted after) instead of inline bytes,
+    # because inline data is base64-encoded and requests have a total size limit.
+    inline_clip_bytes: int = 14 * 1024 * 1024
     clip_fps: int = 5
     agent_max_tool_calls: int = 4
     agent_deadline_s: int = 45

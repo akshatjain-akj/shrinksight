@@ -16,7 +16,7 @@ import { useStore } from "@/lib/hooks";
 import { shapesToHints } from "@/lib/tier1/zones";
 import type { Incident, ReceiptLine, Transaction } from "@/lib/types";
 
-const MAX_BYTES = 15 * 1024 * 1024;
+const MAX_BYTES = 25 * 1024 * 1024;
 const CUSTOM = "custom";
 
 export default function InvestigatePage() {
@@ -95,7 +95,7 @@ export default function InvestigatePage() {
     if (blob.size > MAX_BYTES) {
       setClip(null);
       setClipUrl(null);
-      setClipError(`That clip is ${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 15 MB. Trim it or record a shorter one.`);
+      setClipError(`That clip is ${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB. Trim it or record a shorter one.`);
       return;
     }
     setClip(blob);
@@ -233,7 +233,7 @@ export default function InvestigatePage() {
               </div>
               {source === "upload" ? (
                 <div className="field">
-                  <label htmlFor="clip-file">Video file (MP4, WebM or MOV, up to 15 MB, ideally 5–20 s)</label>
+                  <label htmlFor="clip-file">Video file (MP4, WebM or MOV, up to 25 MB, ideally 5–20 s)</label>
                   <input
                     id="clip-file"
                     type="file"

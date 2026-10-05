@@ -14,6 +14,18 @@ class FakeGateway:
         self.script = list(script)
         self.calls: list[tuple] = []
 
+    uploads: list = []
+    deleted: list = []
+
+    def upload_video(self, data, mime):
+        from app.gemini import UploadedFile
+
+        self.uploads = [*self.uploads, (len(data), mime)]
+        return UploadedFile(name="files/test-1", uri="https://files.test/1", mime_type=mime)
+
+    def delete_file(self, name):
+        self.deleted = [*self.deleted, name]
+
     def generate(self, model, contents, config):
         self.calls.append((model, contents, config))
         if not self.script:

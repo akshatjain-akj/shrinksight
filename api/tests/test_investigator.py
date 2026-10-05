@@ -200,3 +200,30 @@ def test_normalise_mime():
     assert normalise_mime("video/webm;codecs=vp9") == "video/webm"
     assert normalise_mime("video/quicktime") == "video/mov"
     assert normalise_mime("image/png") is None
+
+
+def test_large_clip_goes_through_files_api_and_is_deleted(repo, settings):
+    from dataclasses import replace
+
+    small_inline = replace(settings, inline_clip_bytes=4)
+    gateway = FakeGateway([text("notes"), text(verdict_json())])
+
+    events = run(repo, gateway, small_inline)
+
+    assert events[-1]["type"] == "result"
+    assert [e["step"] for e in events if e["type"] == "progress"][0] == "upload"
+    first_video = gateway.calls[0][1][0].parts[0]
+    assert first_video.file_data.file_uri == "https://files.test/1" and first_video.inline_data is None
+    assert gateway.uploads == [(len(CLIP), "video/webm")]
+    assert gateway.deleted == ["files/test-1"]
+
+
+def test_uploaded_clip_is_deleted_even_when_gemini_fails(repo, settings):
+    from dataclasses import replace
+
+    gateway = FakeGateway([GeminiUnavailable("quota reached", 429)])
+
+    events = run(repo, gateway, replace(settings, inline_clip_bytes=4))
+
+    assert events[-1]["type"] == "error"
+    assert gateway.deleted == ["files/test-1"]

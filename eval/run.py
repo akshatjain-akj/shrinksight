@@ -67,7 +67,7 @@ def run_clip(entry: dict, clips_dir: Path, repo: MemoryRepo, gateway, settings: 
         result.error = f"unsupported type {path.suffix}"
         return result
     if len(clip) > settings.max_clip_bytes:
-        result.error = f"too large ({len(clip) / 1024 / 1024:.1f} MB > 15 MB)"
+        result.error = f"too large ({len(clip) / 1024 / 1024:.1f} MB > {settings.max_clip_bytes // (1024 * 1024)} MB)"
         return result
 
     camera = next(c for c in repo.cameras() if c.id == entry["camera_id"])

@@ -276,16 +276,20 @@ def investigate(
         yield {"type": "result", "incident": incident.model_dump(), "cached": True}
         return
 
+    uploaded = None
     try:
         from google.genai import types
 
         context = _context_text(camera, repo, tier1_events, zones)
         marked = _still_parts(types, stills or [])
-        plain_video = types.Part(inline_data=types.Blob(data=clip, mime_type=mime))
-        video = types.Part(
-            inline_data=types.Blob(data=clip, mime_type=mime),
-            video_metadata=types.VideoMetadata(fps=settings.clip_fps),
-        )
+        if len(clip) > settings.inline_clip_bytes:
+            yield _progress("upload", "Uploading the clip to Gemini")
+            uploaded = gateway.upload_video(clip, mime)
+            source = {"file_data": types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type)}
+        else:
+            source = {"inline_data": types.Blob(data=clip, mime_type=mime)}
+        plain_video = types.Part(**source)
+        video = types.Part(**source, video_metadata=types.VideoMetadata(fps=settings.clip_fps))
         toolbox = ToolBox(repo, camera, transaction)
         tool_log: list[ToolCallLog] = []
         tool_results: list[dict] = []
@@ -363,6 +367,9 @@ def investigate(
         yield {"type": "error", "message": str(exc)}
     except TimeoutError:
         yield {"type": "error", "message": "The investigation took too long. Try a shorter clip."}
+    finally:
+        if uploaded is not None:
+            gateway.delete_file(uploaded.name)  # clips are analysed, never kept
 
 
 def _check_deadline(started: float, settings: Settings) -> None:
