@@ -1,17 +1,27 @@
 """Thin gateway over the google-genai SDK.
 
-Everything that talks to Gemini goes through `Gateway.generate`, which adds retries with
-exponential backoff and returns a small `GenResult`. Tests swap in a fake gateway that returns
-scripted `GenResult`s, so agent logic is tested without network or quota.
+Everything that talks to Gemini goes through `Gateway.generate`, which adds:
+- a time budget: each call's timeout is capped by the caller's deadline, and retries only happen if they can
+  still finish in time;
+- retries with jittered backoff that honour Gemini's own "retry after" hint;
+- small `GenResult` objects, so tests can swap in a fake gateway with scripted results.
+
+`call_with_fallback` moves to the next free model when one is overloaded or rate limited.
 """
 
 import io
+import json
 import random
+import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 RETRYABLE_CODES = {408, 429, 500, 502, 503, 504}
+# Errors where another model is worth trying: overloaded, rate limited, server trouble, or not available here.
+FALLBACK_CODES = {404, 429, 500, 502, 503, 504}
+MIN_CALL_SECONDS = 3
 
 
 class GeminiUnavailable(Exception):
@@ -44,9 +54,30 @@ class UploadedFile:
 
 
 class Gateway(Protocol):
-    def generate(self, model: str, contents: list, config: Any) -> GenResult: ...
-    def upload_video(self, data: bytes, mime: str) -> UploadedFile: ...
+    def generate(
+        self,
+        model: str,
+        contents: list,
+        config: Any,
+        deadline: float | None = None,
+        retries: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> GenResult: ...
+    def upload_video(self, data: bytes, mime: str, timeout_s: float = 60) -> UploadedFile: ...
     def delete_file(self, name: str) -> None: ...
+
+
+def seconds_left(deadline: float | None) -> float:
+    return float("inf") if deadline is None else deadline - time.monotonic()
+
+
+def thinking_config(types, model: str, level: str):
+    """Low thinking keeps investigations fast. Only Gemini 3+ takes a thinking level; others keep their default."""
+    level = (level or "").strip().upper()
+    if not level or level == "DEFAULT" or not re.match(r"^gemini-(3|[4-9])", model):
+        return None
+    member = getattr(types.ThinkingLevel, level, None)
+    return types.ThinkingConfig(thinking_level=member) if member is not None else None
 
 
 class GeminiGateway:
@@ -57,27 +88,47 @@ class GeminiGateway:
         from google.genai import types
 
         self._types = types
+        self._timeout_ms = timeout_ms
         self._client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=timeout_ms))
         self._max_retries = max_retries
 
-    def generate(self, model: str, contents: list, config: Any) -> GenResult:
+    def generate(
+        self,
+        model: str,
+        contents: list,
+        config: Any,
+        deadline: float | None = None,
+        retries: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> GenResult:
         from google.genai import errors
 
+        retries = self._max_retries if retries is None else retries
         attempt = 0
         while True:
+            left = seconds_left(deadline)
+            if left < MIN_CALL_SECONDS:
+                raise GeminiUnavailable("Ran out of time waiting for Gemini.", 408)
+            cap_ms = timeout_ms or (self._timeout_ms if deadline is None else int((left - 1) * 1000))
+            call_ms = int(min(cap_ms, (left - 1) * 1000)) if deadline is not None else cap_ms
+            call_config = config.model_copy(update={"http_options": self._types.HttpOptions(timeout=call_ms)})
             try:
-                response = self._client.models.generate_content(model=model, contents=contents, config=config)
+                response = self._client.models.generate_content(model=model, contents=contents, config=call_config)
                 return _to_result(response)
             except errors.APIError as exc:
                 code = getattr(exc, "code", None)
-                if code not in RETRYABLE_CODES or attempt >= self._max_retries:
+                if code not in RETRYABLE_CODES or attempt >= retries:
                     raise GeminiUnavailable(_friendly(code, str(exc)), code) from exc
+                wait = _retry_after(exc) or (min(4.0, 1.5 * 2**attempt) + random.uniform(0, 0.6))
             except Exception as exc:  # network errors / timeouts from the HTTP layer
-                if attempt >= self._max_retries:
-                    raise GeminiUnavailable(f"Gemini request failed: {type(exc).__name__}") from exc
+                if attempt >= retries:
+                    raise GeminiUnavailable(f"Gemini request failed: {type(exc).__name__}", 408) from exc
+                wait = 1.0 + random.uniform(0, 0.5)
+            # Only wait if a retry can still finish inside the budget; otherwise let the caller fall back.
+            if wait > seconds_left(deadline) - 8:
+                raise GeminiUnavailable("Gemini is busy right now.", 503)
             attempt += 1
-            time.sleep(min(8.0, 2**attempt) + random.uniform(0, 0.5))
-
+            time.sleep(wait)
 
     def upload_video(self, data: bytes, mime: str, timeout_s: float = 60) -> UploadedFile:
         """Uploads a large clip via the Files API and waits until Gemini has processed it."""
@@ -87,8 +138,8 @@ class GeminiGateway:
             deadline = time.monotonic() + timeout_s
             while uploaded.state and uploaded.state.name == "PROCESSING":
                 if time.monotonic() > deadline:
-                    raise GeminiUnavailable("Gemini took too long to process the uploaded clip.")
-                time.sleep(1.5)
+                    raise GeminiUnavailable("Gemini took too long to process the uploaded clip.", 408)
+                time.sleep(1.0)
                 uploaded = self._client.files.get(name=uploaded.name)
         except GeminiUnavailable:
             raise
@@ -105,6 +156,55 @@ class GeminiGateway:
             pass  # files expire on their own after 48 h; deletion is best effort
 
 
+def call_with_fallback(
+    gateway: Gateway,
+    models: list[str],
+    contents: list,
+    config_for: Callable[[str], Any],
+    deadline: float | None = None,
+    retries: int = 1,
+    on_switch: Callable[[str], None] | None = None,
+) -> tuple[GenResult, str]:
+    """Tries each model in order; moves on when one is overloaded, rate limited or unavailable."""
+    last: GeminiUnavailable | None = None
+    for index, model in enumerate(models):
+        if index and on_switch:
+            on_switch(model)
+        try:
+            return gateway.generate(model, contents, config_for(model), deadline=deadline, retries=retries), model
+        except GeminiUnavailable as exc:
+            last = exc
+            if exc.code not in FALLBACK_CODES or seconds_left(deadline) < 8:
+                raise
+    raise last or GeminiUnavailable("No Gemini model is configured.")
+
+
+def model_chain(primary: str, fallbacks: tuple[str, ...]) -> list[str]:
+    chain: list[str] = []
+    for model in (primary, *fallbacks):
+        if model and model not in chain:
+            chain.append(model)
+    return chain
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """Seconds Gemini asked us to wait (Retry-After header or RetryInfo.retryDelay), if any."""
+    try:
+        header = exc.response.headers.get("retry-after")  # type: ignore[attr-defined]
+        if header:
+            return float(header)
+    except Exception:
+        pass
+    try:
+        details = json.dumps(getattr(exc, "details", None) or {})
+        match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', details)
+        if match:
+            return float(match.group(1))
+    except Exception:
+        pass
+    return None
+
+
 def _to_result(response: Any) -> GenResult:
     calls = [FunctionCall(name=c.name, args=dict(c.args or {})) for c in (response.function_calls or [])]
     content = response.candidates[0].content if response.candidates else None
@@ -118,6 +218,8 @@ def _to_result(response: Any) -> GenResult:
 def _friendly(code: int | None, raw: str) -> str:
     if code == 429:
         return "Gemini free-tier quota reached; please try again in a minute."
+    if code == 503:
+        return "Gemini is overloaded right now; please try again in a moment."
     if code == 404:
         return "Configured Gemini model was not found; check GEMINI_MODEL / GEMINI_INVESTIGATOR_MODEL."
     if code in (400, 413):

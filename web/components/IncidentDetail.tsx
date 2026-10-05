@@ -4,7 +4,22 @@ import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { clipSeconds, dateTime, inr } from "@/lib/format";
 import type { Incident, SeenItem } from "@/lib/types";
+import AskPanel from "./AskPanel";
 import { ErrorNotice, StatusPill, VerdictBadge } from "./ui";
+
+const TIMING_LABELS: [string, string][] = [
+  ["upload_ms", "upload"],
+  ["watch_ms", "watching"],
+  ["recheck_ms", "re-check"],
+  ["total_ms", "total"],
+];
+
+function timingText(timings?: Record<string, number>): string {
+  if (!timings) return "";
+  return TIMING_LABELS.filter(([key]) => timings[key] && timings[key] >= 50)
+    .map(([key, label]) => `${label} ${(timings[key] / 1000).toFixed(1)} s`)
+    .join(" · ");
+}
 
 const LOCATION_TEXT: Record<string, string> = {
   over_scanner: "passed over the scanner",
@@ -177,6 +192,9 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               <h2 id="compare-title">Seen on camera vs. till receipt</h2>
               <p className="muted small" style={{ marginTop: 0 }}>
                 {verdict.items_seen} handled · {verdict.items_scanned} scanned · {incident.receipt.length} on receipt
+                {verdict.starting_items && verdict.starting_items.length > 0 && (
+                  <span className="seen-meta">In the item pile at the start: {verdict.starting_items.join(", ")}</span>
+                )}
               </p>
               <table className="compare">
                 <thead>
@@ -287,9 +305,14 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
             {error && <ErrorNotice>{error}</ErrorNotice>}
             <p className="muted small" style={{ margin: 0 }}>
               Model: {incident.model}
-              {incident.latency_ms ? ` · ${(incident.latency_ms / 1000).toFixed(1)} s` : ""}
+              {incident.timings
+                ? ` · ${timingText(incident.timings)}`
+                : incident.latency_ms
+                  ? ` · ${(incident.latency_ms / 1000).toFixed(1)} s`
+                  : ""}
             </p>
           </section>
+          <AskPanel incident={current} />
         </div>
       </div>
     </article>

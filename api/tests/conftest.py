@@ -17,7 +17,7 @@ class FakeGateway:
     uploads: list = []
     deleted: list = []
 
-    def upload_video(self, data, mime):
+    def upload_video(self, data, mime, timeout_s=60):
         from app.gemini import UploadedFile
 
         self.uploads = [*self.uploads, (len(data), mime)]
@@ -26,7 +26,7 @@ class FakeGateway:
     def delete_file(self, name):
         self.deleted = [*self.deleted, name]
 
-    def generate(self, model, contents, config):
+    def generate(self, model, contents, config, deadline=None, retries=None, timeout_ms=None):
         self.calls.append((model, contents, config))
         if not self.script:
             raise AssertionError("FakeGateway: no scripted response left")
@@ -51,7 +51,8 @@ def repo() -> MemoryRepo:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(gemini_api_key="test-key", investigator_model="test-model", gemini_model="test-model")
+    return Settings(gemini_api_key="test-key", investigator_model="test-model", gemini_model="test-model",
+                    fallback_models=())
 
 
 @pytest.fixture

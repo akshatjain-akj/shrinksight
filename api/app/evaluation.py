@@ -23,6 +23,8 @@ class ClipResult:
     predicted_items: list[str] = field(default_factory=list)
     latency_ms: int | None = None
     error: str | None = None
+    answered_by: str | None = None
+    timings: dict[str, int] = field(default_factory=dict)
 
     @property
     def scored(self) -> bool:
@@ -103,8 +105,8 @@ def to_markdown(results: list[ClipResult], title: str) -> str:
     lines = [
         f"# {title}",
         "",
-        "| Clip | Angle | Expected | Got | Unscanned (exp → got) | Verdict | Count | Latency |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Clip | Angle | Expected | Got | Unscanned (exp → got) | Verdict | Count | Latency | Model |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         got = r.error or r.predicted_verdict or "–"
@@ -112,7 +114,7 @@ def to_markdown(results: list[ClipResult], title: str) -> str:
         latency = f"{r.latency_ms / 1000:.1f} s" if r.latency_ms else "–"
         lines.append(
             f"| {r.file} | {r.angle} | {r.expected_verdict} | {got} | {unscanned} | "
-            f"{'✅' if r.verdict_ok else '❌'} | {'✅' if r.count_ok else '❌'} | {latency} |"
+            f"{'✅' if r.verdict_ok else '❌'} | {'✅' if r.count_ok else '❌'} | {latency} | {r.answered_by or '–'} |"
         )
     lines += ["", "## Totals", "", "| Metric | Value |", "|---|---|"]
     lines += [f"| {key.replace('_', ' ')} | {_fmt(value)} |" for key, value in summary.items()]

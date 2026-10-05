@@ -72,15 +72,52 @@ export async function firstFrame(url: string): Promise<Frame> {
   return { blob, dataUrl: canvas.toDataURL("image/jpeg", 0.8), width: canvas.width, height: canvas.height };
 }
 
-/** Four evenly spaced stills with the zone outlines drawn on, ready for the stills upload. */
+const CLOSE_UPS: { kind: string; label: MarkedStill["label"]; atIndex: number }[] = [
+  { kind: "pickup", label: "pickup_start", atIndex: 0 },
+  { kind: "scanner", label: "scanner_mid", atIndex: 1 },
+  { kind: "bagging", label: "bagging_end", atIndex: 3 },
+];
+
+/** A sharp crop of one zone from the full-resolution video (up to 2× zoom, max 640 px wide). */
+function zoneCrop(video: HTMLVideoElement, zone: ZoneShape): HTMLCanvasElement | null {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh || zone.polygon.length < 3) return null;
+  const xs = zone.polygon.map((p) => p.x * vw);
+  const ys = zone.polygon.map((p) => p.y * vh);
+  const padX = (Math.max(...xs) - Math.min(...xs)) * 0.15;
+  const padY = (Math.max(...ys) - Math.min(...ys)) * 0.15;
+  const sx = Math.max(0, Math.min(...xs) - padX);
+  const sy = Math.max(0, Math.min(...ys) - padY);
+  const sw = Math.min(vw - sx, Math.max(...xs) - Math.min(...xs) + padX * 2);
+  const sh = Math.min(vh - sy, Math.max(...ys) - Math.min(...ys) + padY * 2);
+  if (sw < 16 || sh < 16) return null;
+  const scale = Math.min(2, 640 / sw);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  canvas.getContext("2d")!.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/**
+ * Four evenly spaced stills with the zone outlines drawn on, plus close-ups of the marked item pile (start),
+ * scanner (mid) and bagging area (end). Close-ups reuse the same four seeks, so they cost almost nothing.
+ */
 export async function markedStills(url: string, zones: ZoneShape[]): Promise<MarkedStill[]> {
   const video = await openVideo(url);
   const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 4;
   const canvas = canvasFor(video);
   const ctx = canvas.getContext("2d")!;
   const stills: MarkedStill[] = [];
+  const closeUps: MarkedStill[] = [];
   for (const [index, fraction] of [0.15, 0.4, 0.65, 0.9].entries()) {
     await seek(video, duration * fraction);
+    for (const want of CLOSE_UPS.filter((c) => c.atIndex === index)) {
+      const zone = zones.find((z) => z.kind === want.kind);
+      const crop = zone ? zoneCrop(video, zone) : null;
+      if (crop) closeUps.push({ label: want.label, blob: await toJpeg(crop, 0.8) });
+    }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     if (zones.length) {
       drawZoneOutlines(ctx, zones, (p) => [p.x * canvas.width, p.y * canvas.height], canvas.width / 720);
@@ -88,5 +125,5 @@ export async function markedStills(url: string, zones: ZoneShape[]): Promise<Mar
     stills.push({ label: STILL_LABELS[index], blob: await toJpeg(canvas, 0.7) });
   }
   video.removeAttribute("src");
-  return stills;
+  return [...stills, ...closeUps];
 }

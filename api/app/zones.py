@@ -2,15 +2,17 @@
 
 import hashlib
 import json
+import time
 
 from pydantic import ValidationError
 
-from .gemini import Gateway
+from .gemini import Gateway, call_with_fallback, model_chain
 from .models import Camera, Zone, ZoneHint, ZonePoint, ZoneSuggestion, ZoneSuggestionsOut
 
 SUGGEST_PROMPT_VERSION = "2026-10-05.1"
 
 KIND_GUIDE = {
+    "pickup": "where items wait before scanning (a basket, a pile, or the near end of the counter)",
     "scanner": "where items are scanned at a self-checkout. In staged setups this may be a sheet of paper, "
     "a taped square, a box or a phone, not a real scanner",
     "bagging": "where items are put after scanning (a bag, box, tray or the far end of the counter)",
@@ -37,7 +39,7 @@ def zones_context(hints: list[ZoneHint], zones: list[Zone]) -> str:
         lines.append(f"- {hint.zone_id} {names.get(hint.zone_id, hint.zone_id)} ({hint.kind}): [{box}]{described}")
     return (
         "Marked zones ([ymin, xmin, ymax, xmax] on a 0-1000 grid; the same zones are outlined on any attached "
-        "stills, SCANNER in amber and BAGGING in blue):\n" + "\n".join(lines)
+        "stills: ITEMS in pink, SCANNER in amber, BAGGING in blue):\n" + "\n".join(lines)
     )
 
 
@@ -57,7 +59,14 @@ def _clean(suggestion: ZoneSuggestion, allowed: set[str]) -> ZoneSuggestion | No
 
 
 def suggest_zones(
-    image: bytes, mime: str, camera: Camera, zones: list[Zone], gateway: Gateway, model: str, repo
+    image: bytes,
+    mime: str,
+    camera: Camera,
+    zones: list[Zone],
+    gateway: Gateway,
+    model: str,
+    repo,
+    fallbacks: tuple[str, ...] = (),
 ) -> tuple[list[ZoneSuggestion], bool]:
     """Returns (suggestions, cached). One entry per zone of this camera."""
     from google.genai import types
@@ -78,7 +87,13 @@ def suggest_zones(
         response_schema=ZoneSuggestionsOut,
         temperature=0,
     )
-    result = gateway.generate(model, [types.Part.from_bytes(data=image, mime_type=mime), prompt], config)
+    result, _ = call_with_fallback(
+        gateway,
+        model_chain(model, fallbacks),
+        [types.Part.from_bytes(data=image, mime_type=mime), prompt],
+        lambda _model: config,
+        deadline=time.monotonic() + 25,
+    )
     allowed = {z.id for z in camera_zones}
     try:
         parsed = ZoneSuggestionsOut.model_validate_json(result.text)

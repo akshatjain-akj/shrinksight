@@ -14,11 +14,15 @@ const clamp = (n: number) => Math.max(0, Math.min(1, n));
 export interface ZoneState {
   shapes: ZoneShape[];
   descriptions: Record<string, string>;
+  /** Zones that were really placed (saved, suggested or dragged). Unmarked presets are never sent or saved. */
+  marked: string[];
   /** Send the zones with this clip. Off until the boxes are real (saved, suggested or adjusted). */
   send: boolean;
   /** True when the boxes match the camera's saved layout. */
   saved: boolean;
 }
+
+export const markedShapes = (state: ZoneState) => state.shapes.filter((s) => state.marked.includes(s.id));
 
 /** Shows a frame of the clip with the camera's zones; drag corners, ask Gemini, save for the camera. */
 export default function ZoneMarker({
@@ -54,6 +58,7 @@ export default function ZoneMarker({
       shapes: state.shapes.map((s) =>
         s.id === selected.id ? { ...s, polygon: s.polygon.map((p, i) => (i === index ? point : p)) } : s,
       ),
+      marked: state.marked.includes(selected.id) ? state.marked : [...state.marked, selected.id],
     });
   };
 
@@ -65,7 +70,11 @@ export default function ZoneMarker({
     try {
       const res = await api.suggestZones(camera.id, frame.blob);
       const out = applySuggestions(state.shapes, state.descriptions, res.zones);
-      update({ shapes: out.shapes, descriptions: out.descriptions });
+      update({
+        shapes: out.shapes,
+        descriptions: out.descriptions,
+        marked: [...new Set([...state.marked, ...out.found])],
+      });
       const names = (ids: string[]) => ids.map((id) => state.shapes.find((s) => s.id === id)?.name ?? id).join(", ");
       setMessage(
         out.found.length
@@ -84,7 +93,7 @@ export default function ZoneMarker({
     setError(null);
     setMessage(null);
     try {
-      await saveLayoutForEveryone(camera.id, state.shapes, state.descriptions);
+      await saveLayoutForEveryone(camera.id, markedShapes(state), state.descriptions);
       onChange({ ...state, saved: true, send: true });
       setMessage(`Saved as the layout for ${camera.name}. Everyone using this camera now gets these zones.`);
     } catch (e) {
@@ -95,7 +104,7 @@ export default function ZoneMarker({
   };
 
   const copyForEval = async () => {
-    const json = JSON.stringify(shapesToHints(state.shapes, state.descriptions), null, 2);
+    const json = JSON.stringify(shapesToHints(markedShapes(state), state.descriptions), null, 2);
     try {
       await navigator.clipboard.writeText(json);
       setMessage("Zones copied. Paste them as \"zones\" for this clip in eval/manifest.json.");
@@ -119,7 +128,11 @@ export default function ZoneMarker({
                   key={shape.id}
                   points={shape.polygon.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
                   className={shape.id === selected.id ? "zone-poly is-active" : "zone-poly"}
-                  style={{ stroke: ZONE_COLOURS[shape.kind], fill: `${ZONE_COLOURS[shape.kind]}22` }}
+                  style={{
+                    stroke: ZONE_COLOURS[shape.kind],
+                    fill: `${ZONE_COLOURS[shape.kind]}22`,
+                    opacity: state.marked.includes(shape.id) || shape.id === selected.id ? 1 : 0.35,
+                  }}
                   onClick={() => setSelectedId(shape.id)}
                 />
               ))}
@@ -164,6 +177,7 @@ export default function ZoneMarker({
                 onClick={() => setSelectedId(shape.id)}
               >
                 <span aria-hidden="true" style={{ color: ZONE_COLOURS[shape.kind] }}>■</span> {shape.name}
+                {!state.marked.includes(shape.id) && <span className="muted"> · not marked</span>}
               </button>
             ))}
           </div>
@@ -177,7 +191,10 @@ export default function ZoneMarker({
               value={state.descriptions[selected.id] ?? ""}
               onChange={(e) => update({ descriptions: { ...state.descriptions, [selected.id]: e.target.value } })}
             />
-            <span className="hint">Drag the coloured corners onto the real area. A short description helps Gemini too.</span>
+            <span className="hint">
+              Drag the coloured corners onto the real area. A short description helps Gemini too. Only zones you mark
+              are used{selected.kind === "pickup" ? "; the item pile is optional but helps Gemini count every item" : ""}.
+            </span>
           </div>
 
           <div className="row">

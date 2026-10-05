@@ -7,6 +7,7 @@ import {
   loadCameraConfigs,
   saveCameraConfig,
   saveLayoutForEveryone,
+  savedZoneIds,
   syncLayoutsFromServer,
   type DetectionSwitches,
 } from "@/lib/cameraConfig";
@@ -30,6 +31,8 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
   const [drag, setDrag] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Zones that are really placed: saved before, or dragged here. Placeholder presets are never saved.
+  const [touched, setTouched] = useState<string[]>([]);
   const [synced, setSynced] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
 
@@ -61,6 +64,7 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     setPolygons(Object.fromEntries(shapes.map((shape) => [shape.id, shape.polygon])));
     setDetection({ ...DEFAULT_DETECTION, ...savedConfig?.detection });
     setZoneId((current) => (current && camera.zone_ids.includes(current) ? current : shapes[0]?.id ?? null));
+    setTouched(savedZoneIds(camera.id));
     setSaved(false);
     setEditing(true);
   }, [camera, store, synced]);
@@ -80,6 +84,7 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
         : point,
     );
     setPolygons((current) => ({ ...current, [zone.id]: next }));
+    setTouched((current) => (current.includes(zone.id) ? current : [...current, zone.id]));
     setSaved(false);
   };
 
@@ -87,9 +92,12 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     if (!camera) return;
     setSaveError(null);
     const current = loadCameraConfigs()[camera.id];
-    saveCameraConfig(camera.id, { ...current, detection, polygons });
+    const placed = Object.fromEntries(Object.entries(polygons).filter(([id]) => touched.includes(id)));
+    saveCameraConfig(camera.id, { ...current, detection, polygons: placed });
     try {
-      const shapes = zones.map((item) => ({ id: item.id, name: item.name, kind: item.kind, polygon: polygons[item.id] ?? [] }));
+      const shapes = zones
+        .filter((item) => touched.includes(item.id))
+        .map((item) => ({ id: item.id, name: item.name, kind: item.kind, polygon: polygons[item.id] ?? [] }));
       await saveLayoutForEveryone(camera.id, shapes, current?.descriptions ?? {});
       setSaved(true);
     } catch (e) {

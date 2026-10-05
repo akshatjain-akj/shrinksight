@@ -87,6 +87,8 @@ def run_clip(entry: dict, clips_dir: Path, repo: MemoryRepo, gateway, settings: 
         result.error = final["message"][:80]
         return result
     verdict = final["incident"]["verdict"]
+    result.answered_by = final["incident"].get("model")
+    result.timings = final["incident"].get("timings", {})
     result.predicted_verdict = verdict["verdict"]
     result.predicted_unscanned = verdict["items_seen"] - verdict["items_scanned"]
     result.predicted_items = [

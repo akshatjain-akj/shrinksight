@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from . import selftest
+from .agent import ask as ask_agent
 from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
@@ -198,7 +199,7 @@ async def suggest_layout(camera_id: str, request: Request) -> dict:
     gateway = get_gateway()
     try:
         suggestions, cached = await asyncio.to_thread(
-            suggest_zones, image, mime, camera, repo.zones(), gateway, cfg().gemini_model, repo
+            suggest_zones, image, mime, camera, repo.zones(), gateway, cfg().gemini_model, repo, cfg().fallback_models
         )
     except GeminiUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -235,6 +236,26 @@ def review(incident_id: str, body: ReviewIn) -> dict:
     return found.model_dump()
 
 
+class AskIn(BaseModel):
+    question: str = Field(min_length=3, max_length=240)
+
+
+@app.post("/api/incidents/{incident_id}/ask")
+def ask_incident(incident_id: str, body: AskIn, request: Request) -> dict:
+    """A Gemini agent answers a question about this incident, calling store-data tools as needed."""
+    enforce_app_check(request)
+    repo = get_repo()
+    found = repo.get_incident(incident_id)
+    if found is None:
+        raise HTTPException(404, "Incident not found")
+    enforce_limits(request, repo, "questions", cfg().daily_questions)
+    try:
+        result = ask_agent(body.question, found, repo, get_gateway(), cfg())
+    except GeminiUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"answer": result.answer, "steps": result.steps, "model": result.model}
+
+
 @app.get("/api/stats")
 def stats() -> dict:
     items = get_repo().incidents(100)
@@ -264,7 +285,9 @@ def rules_compile(body: CompileIn, request: Request) -> dict:
     repo = get_repo()
     enforce_limits(request, repo, "compile", cfg().daily_rule_compiles)
     try:
-        result = compile_rule(body.text, repo.zones(), get_gateway(), cfg().gemini_model, repo)
+        result = compile_rule(
+            body.text, repo.zones(), get_gateway(), cfg().gemini_model, repo, cfg().fallback_models
+        )
     except GeminiUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     return {"spec": result.spec.model_dump(), "problems": result.problems, "cached": result.cached}
@@ -357,16 +380,18 @@ def _parse_meta(header: str | None) -> InvestigateMeta:
         raise HTTPException(400, "Invalid x-shrinksight-meta header") from exc
 
 
-STILL_LABELS = ("before", "reach", "hold", "after")
+# Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked).
+STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end")
+MAX_STILLS = len(STILL_LABELS)
 STILL_LIMIT = 200_000
 
 
 async def _read_marked(request: Request, limit: int) -> tuple[bytes, str, list[tuple[str, bytes]]]:
     # Reject oversized uploads before parsing: clip + 4 stills + form overhead.
     declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > limit + 4 * STILL_LIMIT + 64 * 1024:
+    if declared and declared.isdigit() and int(declared) > limit + MAX_STILLS * STILL_LIMIT + 64 * 1024:
         raise HTTPException(413, f"Clip too large (max {limit // (1024 * 1024)} MB)")
-    form = await request.form(max_files=5, max_fields=5)
+    form = await request.form(max_files=MAX_STILLS + 1, max_fields=MAX_STILLS + 1)
     upload = form.get("clip")
     if upload is None or not hasattr(upload, "read"):
         raise HTTPException(400, "Missing clip")
@@ -380,7 +405,7 @@ async def _read_marked(request: Request, limit: int) -> tuple[bytes, str, list[t
         raise HTTPException(413, f"Clip too large (max {limit // (1024 * 1024)} MB)")
     stills: list[tuple[str, bytes]] = []
     for item in form.getlist("still"):
-        if not hasattr(item, "read") or len(stills) >= 4:
+        if not hasattr(item, "read") or len(stills) >= MAX_STILLS:
             continue
         label = (getattr(item, "filename", "") or "").rsplit(".", 1)[0]
         if label not in STILL_LABELS:
