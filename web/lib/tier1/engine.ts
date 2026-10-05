@@ -40,7 +40,20 @@ export interface TickResult {
   holdAtMs: number | null;
 }
 
-const SEND_SCORE = 0.4;
+/**
+ * How strict the gate is before a clip goes to Gemini. The server auto-tunes it per camera from the false-alarm
+ * rate (edge_config in Firestore) and the browser applies changes live.
+ */
+export interface EdgeTuning {
+  /** Smoothed score that counts as a hot frame. */
+  sendScore: number;
+  /** Consecutive hot frames needed to send. */
+  hotFrames: number;
+  /** Added to the concealment hold time. */
+  holdExtraMs: number;
+}
+
+export const DEFAULT_TUNING: EdgeTuning = { sendScore: 0.4, hotFrames: 8, holdExtraMs: 0 };
 
 type HideSpot = "pocket" | "bag" | "shirt" | "waistband";
 
@@ -50,7 +63,6 @@ const HIDE_DETAIL: Record<HideSpot, string> = {
   shirt: "Item was tucked under the shirt",
   waistband: "Item was slid into the waistband",
 };
-const HOT_FRAMES = 8;
 const COOLDOWN_MS = 20_000;
 
 function nearest(point: Pt, points: Pt[]): Pt | null {
@@ -113,6 +125,8 @@ export class Tier1Engine {
   alwaysCheckTill = false;
   /** Camera setting. Off skips the person-down check. */
   watchHealth = true;
+  /** The camera's gate strictness; updated live when the server re-tunes it. */
+  tuning: EdgeTuning = DEFAULT_TUNING;
 
   constructor(
     cameraKind: "checkout" | "floor",
@@ -247,10 +261,10 @@ export class Tier1Engine {
     }
 
     this.smoothed = this.smoothed * 0.55 + raw * 0.45;
-    if (this.smoothed >= SEND_SCORE) this.hotFrames += 1;
+    if (this.smoothed >= this.tuning.sendScore) this.hotFrames += 1;
     else this.hotFrames = 0;
 
-    let shouldSend = this.hotFrames >= HOT_FRAMES && sample.tMs >= this.cooldownUntil;
+    let shouldSend = this.hotFrames >= this.tuning.hotFrames && sample.tMs >= this.cooldownUntil;
     let reason = shouldSend ? "Score stayed high across consecutive frames" : "";
 
     const cleared =
@@ -511,8 +525,7 @@ export class Tier1Engine {
 
   private sensitivityMs(): number {
     const rule = this.rules.find((r) => r.enabled && r.spec.type === "CONCEALMENT_SENSITIVITY");
-    if (rule?.spec.sensitivity === "high") return 800;
-    if (rule?.spec.sensitivity === "low") return 1800;
-    return 1200;
+    const base = rule?.spec.sensitivity === "high" ? 800 : rule?.spec.sensitivity === "low" ? 1800 : 1200;
+    return base + this.tuning.holdExtraMs;
   }
 }

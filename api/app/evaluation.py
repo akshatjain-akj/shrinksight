@@ -26,6 +26,8 @@ class ClipResult:
     answered_by: str | None = None
     timings: dict[str, int] = field(default_factory=dict)
     run: int = 1
+    # Total Gemini tokens the investigation used (watch + re-check)
+    tokens: int | None = None
 
     @property
     def scored(self) -> bool:
@@ -71,6 +73,7 @@ def summarise(results: list[ClipResult]) -> dict:
     fn = sum(1 for r in scored if r.expected_positive and not r.predicted_positive)
     tn = sum(1 for r in scored if not r.expected_positive and not r.predicted_positive)
     latencies = [r.latency_ms for r in scored if r.latency_ms is not None]
+    tokens = [r.tokens for r in scored if r.tokens]
     return {
         "clips": len(results),
         "scored": len(scored),
@@ -83,6 +86,7 @@ def summarise(results: list[ClipResult]) -> dict:
         "inconclusive_rate": _ratio(sum(r.predicted_verdict == "INCONCLUSIVE" for r in scored), len(scored)),
         "latency_ms_median": round(median(latencies)) if latencies else None,
         "latency_ms_p95": _p95(latencies),
+        "tokens_median": round(median(tokens)) if tokens else None,
     }
 
 
@@ -123,16 +127,18 @@ def to_markdown(results: list[ClipResult], title: str) -> str:
     lines = [
         f"# {title}",
         "",
-        "| Clip | Angle | Expected | Got | Unscanned (exp → got) | Verdict | Count | Latency | Model |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Clip | Angle | Expected | Got | Unscanned (exp → got) | Verdict | Count | Latency | Tokens | Model |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         got = r.error or r.predicted_verdict or "–"
         unscanned = f"{r.expected_unscanned} → {_fmt(r.predicted_unscanned)}"
         latency = f"{r.latency_ms / 1000:.1f} s" if r.latency_ms else "–"
+        tokens = f"{r.tokens / 1000:.1f}K" if r.tokens else "–"
         lines.append(
             f"| {r.file} | {r.angle} | {r.expected_verdict} | {got} | {unscanned} | "
-            f"{'✅' if r.verdict_ok else '❌'} | {'✅' if r.count_ok else '❌'} | {latency} | {r.answered_by or '–'} |"
+            f"{'✅' if r.verdict_ok else '❌'} | {'✅' if r.count_ok else '❌'} | {latency} | {tokens} | "
+            f"{r.answered_by or '–'} |"
         )
     lines += ["", "## Totals", "", "| Metric | Value |", "|---|---|"]
     lines += [f"| {key.replace('_', ' ')} | {_fmt(value)} |" for key, value in summary.items()]

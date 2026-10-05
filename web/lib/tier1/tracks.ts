@@ -1,5 +1,5 @@
 import { dist, type Pt } from "./geometry.ts";
-import { Tier1Engine, type BodySample, type TickResult } from "./engine.ts";
+import { DEFAULT_TUNING, Tier1Engine, type BodySample, type EdgeTuning, type TickResult } from "./engine.ts";
 
 const MATCH_DIST = 0.18;
 const MATCH_MS = 1000;
@@ -26,6 +26,7 @@ export class PersonTracker {
   private nextId = 1;
   private laneLeave = false;
   private watchHealth = true;
+  private tuning: EdgeTuning = DEFAULT_TUNING;
   private readonly makeEngine: () => Tier1Engine;
 
   constructor(makeEngine: () => Tier1Engine) {
@@ -35,6 +36,12 @@ export class PersonTracker {
   setLaneLeave(enabled: boolean): void {
     this.laneLeave = enabled;
     for (const track of this.tracks) track.engine.alwaysCheckTill = enabled;
+  }
+
+  /** Applies a re-tuned gate to every tracked person now and to people who appear later. */
+  setTuning(tuning: EdgeTuning): void {
+    this.tuning = tuning;
+    for (const track of this.tracks) track.engine.tuning = tuning;
   }
 
   setWatchHealth(enabled: boolean): void {
@@ -101,6 +108,7 @@ export class PersonTracker {
     const engine = this.makeEngine();
     engine.alwaysCheckTill = this.laneLeave;
     engine.watchHealth = this.watchHealth;
+    engine.tuning = this.tuning;
     const track: Track = { id: this.nextId++, hip, lastT: tMs, engine, box: null, lastTick: null };
     this.tracks.push(track);
     return track;

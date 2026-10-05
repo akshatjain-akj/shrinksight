@@ -61,6 +61,12 @@ class Settings:
     gemini_seed: int = field(default_factory=lambda: _env_int("GEMINI_SEED", 7))
     # Gemini 3+ thinking level for investigations: MINIMAL, LOW, MEDIUM, HIGH, or DEFAULT
     thinking_level: str = field(default_factory=lambda: _env("GEMINI_THINKING_LEVEL", "LOW"))
+    # Past manager decisions on the same camera added to each investigation prompt (0 turns the memory off)
+    memory_examples: int = field(default_factory=lambda: _env_int("MEMORY_EXAMPLES", 5))
+    # Edge auto-tuning: how many edge alerts (since the last change) are needed before the gate is adjusted
+    edge_tune_min_alerts: int = field(default_factory=lambda: _env_int("EDGE_TUNE_MIN_ALERTS", 8))
+    edge_tune_window: int = 10
+    max_scanner_photo_bytes: int = 300_000
 
     # Abuse / quota protection
     per_ip_per_minute: int = field(default_factory=lambda: _env_int("PER_IP_PER_MINUTE", 6))

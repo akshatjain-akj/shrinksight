@@ -20,8 +20,12 @@ service cloud.firestore {
     match /zones/{id} {
       allow read: if signedIn();
     }
+    // The auto-tuned Tier-1 gate per camera; Live edge and Monitor listen to it.
+    match /edge_config/{id} {
+      allow read: if signedIn();
+    }
 
-    // Everything else (transactions, cache, counters, meta, selftest) is server-only.
+    // Everything else (transactions, cache, counters, meta, selftest, feedback, scanner_photos) is server-only.
     match /{document=**} {
       allow read, write: if false;
     }

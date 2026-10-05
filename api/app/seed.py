@@ -6,6 +6,7 @@ Seeded documents use fixed ids, so re-seeding never duplicates and never touches
 
 from .models import (
     Camera,
+    Feedback,
     Incident,
     ReceiptLine,
     Rule,
@@ -20,7 +21,7 @@ from .models import (
     Zone,
 )
 
-SEED_VERSION = "2026-10-06.1"
+SEED_VERSION = "2026-10-05.memory"
 STORE_NAME = "Demo Mart (synthetic)"
 
 CAMERAS = [
@@ -191,7 +192,40 @@ INCIDENTS = [
             timeline=[TimelineEvent(t="00:05.2", event="cereal box scanned with a small pack held beneath it")],
             reason="A small pack was held flat under the cereal box so only the cereal was scanned.",
         ),
+        review_reason="missed_scan",
     ),
+    Incident(
+        id="inc-seed-006", created_at="2026-10-02T17:02:41Z", camera_id="cam-sco-1",
+        camera_name="Self-checkout · Lane 1", camera_kind="checkout", status="RESOLVED_DISMISSED",
+        reviewed_at="2026-10-02T17:15:00Z", transaction_id="TXN-L1-1003", receipt=TRANSACTIONS[3].lines,
+        model="seed", source="seed", latency_ms=5800, est_loss_inr=0,
+        unscanned_items=[UnscannedItem(t="00:08.3", description="black phone")],
+        tool_calls=[ToolCallLog(name="get_pos_transaction", args={"lane_id": "L1"})],
+        verdict=VerdictOut(
+            verdict="SCAN_AVOIDANCE", confidence=0.58, items_seen=6, items_scanned=5,
+            seen_items=[SeenItem(t="00:01.4", description="apples bag", scanned=True, receipt_line=1),
+                        SeenItem(t="00:02.9", description="bananas", scanned=True, receipt_line=2),
+                        SeenItem(t="00:04.2", description="tea box", scanned=True, receipt_line=3),
+                        SeenItem(t="00:05.6", description="biscuits pack", scanned=True, receipt_line=4),
+                        SeenItem(t="00:06.8", description="butter pack", scanned=True, receipt_line=5),
+                        SeenItem(t="00:08.3", description="black phone", scanned=False,
+                                 location="never_near_scanner", ended_in="hand_or_pocket")],
+            timeline=[TimelineEvent(t="00:08.3", event="picks a phone up from the bagging shelf and pockets it")],
+            reason="A black handheld object went from the bagging shelf into a pocket without being scanned.",
+        ),
+        review_reason="personal_item",
+        review_note="Shopper's own phone, put down while paying",
+    ),
+]
+
+# The manager's decisions above, as the per-camera memory Gemini sees on new Lane 1 investigations.
+FEEDBACK = [
+    Feedback(incident_id="inc-seed-006", camera_id="cam-sco-1", decision="dismiss", reason="personal_item",
+             note="Shopper's own phone, put down while paying", verdict="SCAN_AVOIDANCE",
+             summary=INCIDENTS[5].verdict.reason, items=["black phone"], reviewed_at="2026-10-02T17:15:00Z"),
+    Feedback(incident_id="inc-seed-005", camera_id="cam-sco-1", decision="confirm", reason="missed_scan",
+             verdict="SCAN_AVOIDANCE", summary=INCIDENTS[4].verdict.reason,
+             items=["small blister pack under cereal box"], reviewed_at="2026-10-03T06:30:00Z"),
 ]
 
 RULES = [

@@ -13,7 +13,7 @@ import time
 from pydantic import ValidationError
 
 from .config import Settings
-from .gemini import Gateway, call_with_fallback, model_chain, thinking_config
+from .gemini import Gateway, add_usage, call_with_fallback, model_chain, thinking_config
 from .models import Camera, InventoryItem, InventoryOut
 
 INVENTORY_PROMPT_VERSION = "2026-10-08.1"
@@ -64,8 +64,8 @@ def clean_items(items: list[InventoryItem]) -> list[InventoryItem]:
 
 def take_inventory(
     views: list[tuple[str, bytes]], camera: Camera, gateway: Gateway, settings: Settings, repo
-) -> tuple[list[InventoryItem], str, bool]:
-    """Returns (items, model that answered, cached)."""
+) -> tuple[list[InventoryItem], str, bool, dict[str, int]]:
+    """Returns (items, model that answered, cached, tokens used; empty when cached)."""
     from google.genai import types
 
     key_source = json.dumps([camera.id, settings.inventory_model, INVENTORY_PROMPT_VERSION]).encode()
@@ -76,7 +76,7 @@ def take_inventory(
     key = "inventory:" + digest.hexdigest()
     cached = repo.cache_get(key)
     if cached:
-        return [InventoryItem(**i) for i in cached["items"]], cached.get("model", ""), True
+        return [InventoryItem(**i) for i in cached["items"]], cached.get("model", ""), True, {}
 
     parts: list = []
     for label, data in views:
@@ -108,4 +108,4 @@ def take_inventory(
         items = []
     if items:
         repo.cache_put(key, {"items": [i.model_dump() for i in items], "model": model})
-    return items, model, False
+    return items, model, False, add_usage({}, result.usage)

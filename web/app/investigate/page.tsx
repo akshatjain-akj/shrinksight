@@ -7,6 +7,7 @@ import IncidentDetail from "@/components/IncidentDetail";
 import InventoryConfirm, { INVENTORY_OFF, type InventoryState } from "@/components/InventoryConfirm";
 import ProgressSteps, { type Step } from "@/components/ProgressSteps";
 import ReceiptEditor, { emptyLine } from "@/components/ReceiptEditor";
+import ScannerPhoto, { SCANNER_PHOTO_NONE, type ScannerPhotoState } from "@/components/ScannerPhoto";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import ZoneMarker, { markedShapes, type ZoneState } from "@/components/ZoneMarker";
 import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
@@ -16,7 +17,7 @@ import { canvasToJpeg, firstFrame, markedStills, numberedPile, pileViews, type F
 import { shrinkClip } from "@/lib/transcode";
 import { useStore } from "@/lib/hooks";
 import { actionCrop, rectToBox, shapesToHints } from "@/lib/tier1/zones";
-import type { Incident, ReceiptLine, Transaction } from "@/lib/types";
+import type { Incident, ReceiptLine, TokenUsage, Transaction } from "@/lib/types";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const CUSTOM = "custom";
@@ -40,6 +41,9 @@ export default function InvestigatePage() {
   const [frameError, setFrameError] = useState<string | null>(null);
   const [zoneState, setZoneState] = useState<ZoneState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [scannerPhoto, setScannerPhoto] = useState<ScannerPhotoState>(SCANNER_PHOTO_NONE);
+  const [savedPhotos, setSavedPhotos] = useState<Record<string, string>>({});
+  const inventoryUsageRef = useRef<TokenUsage | null>(null);
   const [inventory, setInventoryState] = useState<InventoryState>(INVENTORY_OFF);
   // The run loop reads the latest list (and whether the user is editing it) through this ref.
   const inventoryRef = useRef<InventoryState>(INVENTORY_OFF);
@@ -66,6 +70,16 @@ export default function InvestigatePage() {
 
   const camera = store?.cameras.find((c) => c.id === cameraId);
   const isCheckout = camera?.kind === "checkout";
+
+  useEffect(() => {
+    api
+      .scannerPhotos()
+      .then(setSavedPhotos)
+      .catch(() => setSavedPhotos({}));
+  }, []);
+
+  // A photo picked for one camera's clip doesn't carry over to another camera.
+  useEffect(() => setScannerPhoto(SCANNER_PHOTO_NONE), [cameraId]);
 
   // The camera's saved layout is the starting point; boxes are only sent once they're real.
   useEffect(() => {
@@ -138,6 +152,7 @@ export default function InvestigatePage() {
     const sendZones = zonesToSend.length > 0;
     const meta: InvestigateMeta = {
       camera_id: camera.id,
+      origin: "upload",
       zones: shapesToHints(zonesToSend, zoneState?.descriptions ?? {}),
       ...(frame?.duration ? { clip_seconds: Math.round(frame.duration * 10) / 10 } : {}),
     };
@@ -163,10 +178,12 @@ export default function InvestigatePage() {
       pile = await pileViews(clipUrl, pileZone).catch(() => null);
     }
     setInventory(pile ? { ...INVENTORY_OFF, status: "listing" } : INVENTORY_OFF);
+    inventoryUsageRef.current = null;
     if (pile) {
       api
         .inventory(camera.id, pile.views)
         .then((res) => {
+          inventoryUsageRef.current = res.usage;
           if (inventoryRef.current.status === "listing") {
             setInventory({ ...INVENTORY_OFF, status: "ready", items: res.items, model: res.model });
           }
@@ -206,9 +223,26 @@ export default function InvestigatePage() {
         setInventory({ ...listed, status: "used" });
         stills.push({ label: "pickup_start", blob: await numberedPile(pile.base, listed.items) });
         meta.inventory = listed.items.map((i) => ({ description: i.description, box_2d: i.box_2d ?? [] }));
+        if (inventoryUsageRef.current) meta.inventory_usage = inventoryUsageRef.current;
       } else {
         stills.push({ label: "pickup_start", blob: await canvasToJpeg(pile.base) });
       }
+    }
+
+    // 4. Scanner reference photo: this clip's (optionally saved for the camera), else the camera's saved one.
+    if (isCheckout && scannerPhoto.photo) {
+      stills.push({ label: "scanner_ref", blob: scannerPhoto.photo });
+      if (scannerPhoto.saveForCamera) {
+        advance("Saving the scanner photo for this camera");
+        try {
+          const saved = await api.saveScannerPhoto(camera.id, scannerPhoto.photo);
+          setSavedPhotos((prev) => ({ ...prev, [camera.id]: saved.updated_at }));
+        } catch {
+          /* still used for this clip; saving can be retried next time */
+        }
+      }
+    } else if (isCheckout && !scannerPhoto.useSaved) {
+      meta.scanner_photo = "none";
     }
 
     const sizeNote = upload.size < clip.size ? `${mb(upload.size)} MB, was ${mb(clip.size)} MB` : `${mb(upload.size)} MB`;
@@ -352,6 +386,22 @@ export default function InvestigatePage() {
                   The zones are drawn on the stills Gemini sees.
                 </p>
                 <ZoneMarker camera={camera} frame={frame} frameError={frameError} state={zoneState} onChange={setZoneState} />
+                {isCheckout && (
+                  <ScannerPhoto
+                    cameraId={camera.id}
+                    savedAt={savedPhotos[camera.id] ?? null}
+                    state={scannerPhoto}
+                    onChange={setScannerPhoto}
+                    onSavedChange={(savedAt) =>
+                      setSavedPhotos((prev) => {
+                        const next = { ...prev };
+                        if (savedAt) next[camera.id] = savedAt;
+                        else delete next[camera.id];
+                        return next;
+                      })
+                    }
+                  />
+                )}
               </section>
             )}
 

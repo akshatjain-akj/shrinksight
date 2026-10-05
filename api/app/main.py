@@ -4,27 +4,31 @@ import binascii
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import selftest
+from . import edge_tuning, selftest
 from .agent import ask as ask_agent
 from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
 from .inventory import take_inventory
 from .investigator import investigate, normalise_mime
+from .memory import feedback_from
 from .models import (
     POSITIVE_VERDICTS,
     CameraLayout,
+    ConfirmReason,
+    DismissReason,
     InventoryItem,
     ReceiptLine,
     Rule,
     RuleSpec,
+    TokenUsage,
     Transaction,
     ZoneHint,
     validate_rule_spec,
@@ -47,7 +51,7 @@ if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
-        allow_methods=["GET", "POST", "PATCH"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["content-type", "x-shrinksight-meta", "x-firebase-appcheck"],
     )
 
@@ -209,6 +213,63 @@ async def suggest_layout(camera_id: str, request: Request) -> dict:
     return {"camera_id": camera.id, "zones": [s.model_dump() for s in suggestions], "cached": cached}
 
 
+# ---------- scanner reference photos (one per camera) ----------
+def _jpeg_or_400(data: bytes) -> bytes:
+    if not data.startswith(b"\xff\xd8"):
+        raise HTTPException(415, "Send the scanner photo as a JPEG.")
+    return data
+
+
+@app.get("/api/scanner-photos")
+def scanner_photos() -> dict:
+    """When each camera's scanner photo was saved, keyed by camera id. Cameras without one are absent."""
+    return get_repo().scanner_photos()
+
+
+@app.get("/api/cameras/{camera_id}/scanner-photo")
+def get_scanner_photo(camera_id: str) -> Response:
+    found = get_repo().get_scanner_photo(camera_id)
+    if found is None:
+        raise HTTPException(404, "No scanner photo for this camera")
+    return Response(found[0], media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.put("/api/cameras/{camera_id}/scanner-photo")
+async def put_scanner_photo(camera_id: str, request: Request) -> dict:
+    """Body: one JPEG of the scanning device (the browser resizes it to ~640 px). Used for every clip on this camera."""
+    enforce_app_check(request)
+    repo = await asyncio.to_thread(get_repo)
+    camera = await asyncio.to_thread(_camera_or_404, repo, camera_id)
+    data = _jpeg_or_400(await _read_clip(request, cfg().max_scanner_photo_bytes))
+    await asyncio.to_thread(enforce_limits, request, repo, "layouts", cfg().daily_layout_saves)
+    updated_at = _now_iso()
+    await asyncio.to_thread(repo.save_scanner_photo, camera.id, data, updated_at)
+    return {"camera_id": camera.id, "updated_at": updated_at}
+
+
+@app.delete("/api/cameras/{camera_id}/scanner-photo")
+def delete_scanner_photo(camera_id: str) -> dict:
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    repo.delete_scanner_photo(camera.id)
+    return {"camera_id": camera.id, "deleted": True}
+
+
+# ---------- edge gate (auto-tuned per camera, read live by the browser) ----------
+@app.get("/api/edge-config/{camera_id}")
+def edge_config(camera_id: str) -> dict:
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    return edge_tuning.current(repo, camera.id).model_dump()
+
+
+@app.post("/api/edge-config/{camera_id}/undo")
+def edge_config_undo(camera_id: str) -> dict:
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    return edge_tuning.undo(repo, camera.id).model_dump()
+
+
 # ---------- item-pile inventory ----------
 INVENTORY_VIEWS = ("pile", "left", "right")
 
@@ -237,10 +298,12 @@ async def inventory(request: Request) -> dict:
         raise HTTPException(400, "Send at least the 'pile' view")
     views.sort(key=lambda v: INVENTORY_VIEWS.index(v[0]))
     try:
-        items, model, cached = await asyncio.to_thread(take_inventory, views, camera, get_gateway(), cfg(), repo)
+        items, model, cached, usage = await asyncio.to_thread(
+            take_inventory, views, camera, get_gateway(), cfg(), repo
+        )
     except GeminiUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    return {"items": [i.model_dump() for i in items], "model": model, "cached": cached}
+    return {"items": [i.model_dump() for i in items], "model": model, "cached": cached, "usage": usage or None}
 
 
 # ---------- incidents ----------
@@ -259,6 +322,16 @@ def incident(incident_id: str) -> dict:
 
 class ReviewIn(BaseModel):
     decision: Literal["confirm", "dismiss"]
+    # Why: kept as this camera's memory and shown to Gemini on later clips
+    reason: str | None = Field(default=None, max_length=20)
+    note: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def reason_fits_decision(self) -> "ReviewIn":
+        allowed = get_args(DismissReason) if self.decision == "dismiss" else get_args(ConfirmReason)
+        if self.reason is not None and self.reason not in allowed:
+            raise ValueError(f"reason for {self.decision} must be one of {', '.join(allowed)}")
+        return self
 
 
 @app.post("/api/incidents/{incident_id}/review")
@@ -269,8 +342,21 @@ def review(incident_id: str, body: ReviewIn) -> dict:
         raise HTTPException(404, "Incident not found")
     found.status = "RESOLVED_CONFIRMED" if body.decision == "confirm" else "RESOLVED_DISMISSED"
     found.reviewed_at = _now_iso()
+    found.review_reason = body.reason
+    found.review_note = body.note.strip() or None
     repo.save_incident(found)
+    repo.save_feedback(feedback_from(found, body.decision, body.reason, body.note, found.reviewed_at))
+    if found.origin == "edge":
+        _retune(repo, found.camera_id)
     return found.model_dump()
+
+
+def _retune(repo: Repo, camera_id: str) -> None:
+    """Auto-tuning is a bonus: a failure here must never break a review or an investigation."""
+    try:
+        edge_tuning.retune(repo, camera_id, cfg())
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class AskIn(BaseModel):
@@ -411,6 +497,12 @@ class InvestigateMeta(BaseModel):
         return value
     # Zones marked for this clip. None = use the camera's saved layout; [] = send no zones.
     zones: list[ZoneHint] | None = Field(default=None, max_length=8)
+    # "edge" when the Live edge gate sent this clip (it then counts towards the camera's auto-tuning)
+    origin: Literal["edge", "upload"] = "upload"
+    # Use the camera's saved scanner photo when this upload has none ("none" skips it for this clip)
+    scanner_photo: Literal["saved", "none"] = "saved"
+    # Tokens the item-pile inventory call used (shown on the incident for monitoring)
+    inventory_usage: TokenUsage | None = None
 
 
 def enforce_app_check(request: Request) -> None:
@@ -431,8 +523,9 @@ def _parse_meta(header: str | None) -> InvestigateMeta:
         raise HTTPException(400, "Invalid x-shrinksight-meta header") from exc
 
 
-# Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked).
-STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end")
+# Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked), then the optional
+# reference photo of the scanning device uploaded with this clip.
+STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end", "scanner_ref")
 MAX_STILLS = len(STILL_LABELS)
 STILL_LIMIT = 400_000  # the high-detail item-pile close-up can be up to ~1024 px wide
 
@@ -533,6 +626,17 @@ async def investigate_clip(request: Request) -> StreamingResponse:
     if transaction is not None and transaction.source == "live":
         await asyncio.to_thread(repo.save_transaction, transaction)
 
+    # A scanner photo uploaded with this clip wins; otherwise the camera's saved one (checkout cameras only).
+    scanner_photo = next((data for label, data in stills if label == "scanner_ref"), None)
+    stills = [(label, data) for label, data in stills if label != "scanner_ref"]
+    photo_source = "clip" if scanner_photo else None
+    if scanner_photo is None and meta.scanner_photo == "saved" and camera.kind == "checkout":
+        saved_photo = await asyncio.to_thread(repo.get_scanner_photo, camera.id)
+        if saved_photo:
+            scanner_photo, photo_source = saved_photo[0], "saved"
+    memory = await asyncio.to_thread(repo.feedback, camera.id) if cfg().memory_examples > 0 else []
+    edge_confidence = max((e.confidence for e in meta.tier1_events if e.confidence is not None), default=None)
+
     def events():
         for event in investigate(
             clip, mime, camera, transaction, repo, gateway, cfg(),
@@ -542,7 +646,15 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             clip_seconds=meta.clip_seconds,
             inventory=meta.inventory,
             video_crop=meta.video_crop,
+            memory=memory,
+            scanner_photo=scanner_photo,
+            scanner_photo_source=photo_source,
+            origin=meta.origin,
+            edge_confidence=edge_confidence,
+            inventory_usage=meta.inventory_usage,
         ):
+            if event["type"] == "result" and meta.origin == "edge" and not event.get("cached"):
+                _retune(repo, camera.id)
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

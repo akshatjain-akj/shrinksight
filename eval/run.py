@@ -92,6 +92,7 @@ def run_clip(entry: dict, clips_dir: Path, repo: MemoryRepo, gateway, settings: 
     verdict = final["incident"]["verdict"]
     result.answered_by = final["incident"].get("model")
     result.timings = final["incident"].get("timings", {})
+    result.tokens = (final["incident"].get("usage") or {}).get("total")
     result.predicted_verdict = verdict["verdict"]
     result.predicted_unscanned = verdict["items_seen"] - verdict["items_scanned"]
     result.predicted_items = [

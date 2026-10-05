@@ -440,3 +440,42 @@ test("a held pocket after a reach fires concealment", () => {
   }
   assert.equal(fired, true);
 });
+
+test("a stricter auto-tuned gate needs more hot frames before sending", () => {
+  const bypassRun = (engine: Tier1Engine) => {
+    let sent = false;
+    for (let i = 0; i < 16; i++) {
+      const approach = i < 6;
+      const tick = engine.tick({
+        tMs: i * 100,
+        present: true,
+        leftWrist: approach ? { x: 0.12 + i * 0.06, y: 0.28 } : { x: 0.75, y: 0.5 },
+        leftHip: { x: 0.5, y: 0.8 },
+        rightHip: { x: 0.55, y: 0.8 },
+      });
+      sent ||= tick.shouldSend;
+    }
+    return sent;
+  };
+  assert.equal(bypassRun(new Tier1Engine("checkout", checkoutZones, [])), true);
+  const strict = new Tier1Engine("checkout", checkoutZones, []);
+  strict.tuning = { sendScore: 0.55, hotFrames: 15, holdExtraMs: 900 };
+  assert.equal(bypassRun(strict), false);
+});
+
+test("the tracker applies a re-tuned gate to people already in frame and to new ones", async () => {
+  const { PersonTracker } = await import("./tracks.ts");
+  const tracker = new PersonTracker(() => new Tier1Engine("checkout", checkoutZones, []));
+  const person = (x: number) => ({
+    hip: { x, y: 0.8 },
+    box: null,
+    sample: { tMs: 0, present: true, leftHip: { x, y: 0.8 } },
+  });
+  tracker.update([person(0.3)], 0);
+  const strict = { sendScore: 0.5, hotFrames: 12, holdExtraMs: 600 };
+  tracker.setTuning(strict);
+  tracker.update([person(0.3), person(0.9)], 100);
+  const engines = (tracker as unknown as { tracks: { engine: Tier1Engine }[] }).tracks.map((t) => t.engine);
+  assert.equal(engines.length, 2);
+  assert.ok(engines.every((engine) => engine.tuning === strict));
+});

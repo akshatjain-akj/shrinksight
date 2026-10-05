@@ -2203,3 +2203,44 @@ table.compare {
   color: var(--muted);
   font-size: 0.78rem;
 }
+
+/* ---------- Auto-tuned gate, camera memory, scanner photo, token log ---------- */
+.tuning-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  border-color: rgb(251 191 36 / 0.45);
+  background: rgb(251 191 36 / 0.07);
+}
+.reason-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.reason-chips button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.memory-note {
+  border-left: 3px solid var(--accent);
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-2);
+  border-radius: 0 8px 8px 0;
+}
+.scanner-photo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.scanner-photo img {
+  width: 96px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.token-log {
+  font-variant-numeric: tabular-nums;
+}

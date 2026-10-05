@@ -6,7 +6,8 @@ import CameraConfig from "@/components/CameraConfig";
 import LiveScan from "@/components/LiveScan";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL } from "@/lib/format";
-import { useIncidents, useRules, useStore } from "@/lib/hooks";
+import EdgeTuningBanner from "@/components/EdgeTuningBanner";
+import { toTuning, useEdgeConfig, useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useClipUrl } from "@/lib/useClip";
 import type { Camera, Incident, Rule, Zone } from "@/lib/types";
 
@@ -53,6 +54,8 @@ function CameraTile({ camera, marks, selected, zones, rules, onSelect, onSetting
   onSettings: () => void;
 }) {
   const clipUrl = useClipUrl(camera.id);
+  const { config } = useEdgeConfig(camera.id);
+  const tuning = useMemo(() => toTuning(config), [config]);
   const boxes = marks.length > 0 ? marks : [null];
   return (
     <div className={`camera camera-${camera.kind}${selected ? " is-on" : ""}`}>
@@ -81,7 +84,7 @@ function CameraTile({ camera, marks, selected, zones, rules, onSelect, onSetting
         </span>
       </span>
       <span className="camera-scene">
-        {clipUrl && <LiveScan src={clipUrl} camera={camera} zones={zones} rules={rules} loop />}
+        {clipUrl && <LiveScan src={clipUrl} camera={camera} zones={zones} rules={rules} tuning={tuning} loop />}
         {!clipUrl && boxes.map((incident, index) => (
           <span key={incident?.id ?? "clear"} className={`wall-box wall-box-${index} tone-${incident ? boxTone(incident) : "calm"}`}>
             <span className="wall-tag">
@@ -94,6 +97,12 @@ function CameraTile({ camera, marks, selected, zones, rules, onSelect, onSetting
       </span>
     </div>
   );
+}
+
+/** Shows the auto-tune banner for one camera when its gate was changed (Firestore keeps it live). */
+function CameraTuning({ camera }: { camera: Camera }) {
+  const { config, setConfig } = useEdgeConfig(camera.id);
+  return <EdgeTuningBanner config={config} cameraName={camera.name} onChange={setConfig} />;
 }
 
 export default function MonitorPage() {
@@ -159,6 +168,13 @@ export default function MonitorPage() {
           </div>
           {storeError && <ErrorNotice>Couldn’t load the store: {storeError}</ErrorNotice>}
           {!store && !storeError && <Skeletons count={2} />}
+          {store && (
+            <div className="stack" style={{ marginBottom: "0.6rem" }}>
+              {store.cameras.map((camera) => (
+                <CameraTuning key={camera.id} camera={camera} />
+              ))}
+            </div>
+          )}
           {store && (
             <div className="cameras">
               {store.cameras.map((camera) => (

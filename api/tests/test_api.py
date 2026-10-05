@@ -44,7 +44,7 @@ def test_review_confirms_an_incident(api):
 
 def test_stats_from_seed(api):
     assert api.get("/api/stats").json() == {
-        "investigated": 5,
+        "investigated": 6,
         "flagged": 3,
         "false_alarms_rejected": 2,
         "needs_review": 2,
