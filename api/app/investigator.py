@@ -59,7 +59,7 @@ BACKUP_MIN_SECONDS = 20
 RECHECK_MIN_SECONDS = 15
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-06.floor-custody"
+PROMPT_VERSION = "2026-10-06.item-moment"
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end", "hand_reach", "hand_hold"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
@@ -144,7 +144,9 @@ Method for the shop floor (zone policy provided):
   Bending or reaching toward a shelf is not a fall.
 
 Format: timestamps are relative to the clip start, mm:ss.s. Bounding boxes use [ymin, xmin, ymax, xmax]
-normalised to 0-1000. Stills, when attached, come first: time-ordered stills, then close-ups at higher detail.
+normalised to 0-1000. For each seen item, t is the moment it is most clearly visible in the hand (for an item that
+gets hidden, just before it is hidden), and box_2d is drawn tightly around the item itself at exactly that moment.
+Stills, when attached, come first: time-ordered stills, then close-ups at higher detail.
 Labelled outlines mark the zones (ITEMS in pink, SCANNER in amber, BAGGING in blue); a red rectangle marks the
 person when present. Judge the stills and the video together.
 """

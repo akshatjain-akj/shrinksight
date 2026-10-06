@@ -83,11 +83,16 @@ class Transaction(BaseModel):
 
 # ---------- Gemini investigation output (structured output schema) ----------
 class SeenItem(BaseModel):
-    t: str = Field(description="Clip-relative timestamp, e.g. '00:06.4'")
+    t: str = Field(
+        description="Clip-relative mm:ss.s of the moment the item is most clearly visible in the hand; for an item "
+        "that gets hidden, just before it is hidden. e.g. '00:06.4'"
+    )
     description: str = Field(description="Short visual description of the item, no brand guesses")
     scanned: bool = Field(description="True if the item matches a receipt line (it was rung up)")
     box_2d: list[int] = Field(
-        default_factory=list, description="[ymin, xmin, ymax, xmax] normalised 0-1000 at time t"
+        default_factory=list,
+        description="[ymin, xmin, ymax, xmax] normalised 0-1000, tightly around the item itself at exactly time t "
+        "(not the hand or person)",
     )
     receipt_line: int | None = Field(
         default=None, description="1-based number of the till receipt line this item matches, or null if none"

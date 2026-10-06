@@ -628,7 +628,9 @@ human-readable messages; quota errors return 429 with `retry_after`.
 
 **Prompt principles:** describe **actions only** (never appearance, clothing as identity, age, gender or ethnicity);
 say INCONCLUSIVE rather than guess; timestamps are relative to the clip start; bounding boxes use Gemini's native
-0–1000 `box_2d` format so the UI can overlay them directly.
+0–1000 `box_2d` format so the UI can overlay them directly. Each item's `t` and box are pinned to one moment (most
+clearly in the hand, or just before it is hidden); the evidence player opens paused there and draws each box only
+within 0.7 s of its moment (`web/lib/marks.ts`), labelled as Gemini's approximate position.
 
 **Model choice (set in config, confirmed on day 1):** Flash for investigations, Flash-Lite for rule compiling and as
 the fallback model.
