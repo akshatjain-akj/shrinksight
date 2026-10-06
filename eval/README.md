@@ -26,6 +26,11 @@ small item from the shelf, carry one away in your hand, put one back, take your 
 folder and add them with `camera_id` `cam-aisle-4` or `cam-aisle-2`, no `receipt`, and the expected verdict
 (`CONCEALMENT` for the pocket, `BENIGN` for the others).
 
+### Tier-1 gate check (by hand, no quota)
+The eval script measures Gemini only. To see how often Tier-1 would miss a theft, open each clip on **Investigate**
+with **Screen with Tier-1 first** ticked and note whether it says *flagged* or *cleared*. A theft clip that is cleared
+is a gate miss; a harmless clip that is cleared is a saved Gemini call. Clearing costs no Gemini quota.
+
 ## 2. Run
 ```bash
 cd api

@@ -18,7 +18,7 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 | **Playback** (`/playback`) | Search incidents by date, camera and event; replay the incident timeline |
 | **Live edge** (`/edge`) | Tier 1 on this device: MediaPipe pose/face/objects, on-device face blur, score gate → Gemini |
 | **Incident** (`/incident?id=…`) | Gemini's verdict, agent steps, *seen on camera vs. till receipt*, estimated loss in ₹, human Confirm / Dismiss |
-| **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress |
+| **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress. Optional **Screen with Tier-1 first**: the on-device gate scans the clip and Gemini runs only if it opens |
 | **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable |
 | **Setup check** (`/setup`) | Verifies Cloud Run, Firestore, Storage, Auth and Gemini |
 

@@ -205,7 +205,7 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
     const trimmed = note.trim();
     const chosen = reason ?? (trimmed ? "other" : null);
     if (pending === "dismiss" && !chosen) {
-      setError("Pick a reason, or write a note, then press Enter.");
+      setError("Pick a reason or write a note first.");
       return;
     }
     setReviewing(true);
@@ -249,6 +249,17 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                 </span>
               )}
               {incident.origin === "edge" && <span className="chip">Sent by the live edge</span>}
+              {incident.tier1_screen === "flagged" && (
+                <span className="chip" title="The on-device Tier-1 check screened this clip first and its gate opened">
+                  Screened by Tier-1 · flagged
+                  {incident.edge_confidence != null ? ` ${Math.round(incident.edge_confidence * 100)}%` : ""}
+                </span>
+              )}
+              {incident.tier1_screen === "cleared" && (
+                <span className="chip" title="Tier-1 saw nothing that opens the gate; staff asked Gemini to check anyway">
+                  Sent anyway · Tier-1 had cleared it
+                </span>
+              )}
             </div>
           </div>
           {incident.est_loss_inr > 0 && (
@@ -482,21 +493,16 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                     </button>
                   ))}
                 </div>
-                <div className="row" style={{ alignItems: "flex-end" }}>
-                  <label className="field small" style={{ flex: 1, minWidth: 0 }}>
-                    Note (optional)
-                    <input
-                      type="text"
-                      maxLength={200}
-                      value={note}
-                      placeholder={pending === "dismiss" ? "e.g. shopper's own phone" : "e.g. razor pack under the cereal"}
-                      onChange={(e) => setNote(e.target.value)}
-                    />
-                  </label>
-                  <button type="submit" className="btn btn-primary" disabled={reviewing}>
-                    Enter
-                  </button>
-                </div>
+                <label className="field small">
+                  Note (optional)
+                  <input
+                    type="text"
+                    maxLength={200}
+                    value={note}
+                    placeholder={pending === "dismiss" ? "e.g. shopper's own phone" : "e.g. razor pack under the cereal"}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </label>
                 <div className="row">
                   <button
                     type="submit"

@@ -8,6 +8,7 @@ import InventoryConfirm, { INVENTORY_OFF, type InventoryState } from "@/componen
 import ProgressSteps, { type Step } from "@/components/ProgressSteps";
 import ReceiptEditor, { emptyLine } from "@/components/ReceiptEditor";
 import ScannerPhoto, { SCANNER_PHOTO_NONE, type ScannerPhotoState } from "@/components/ScannerPhoto";
+import Tier1ScreenCard, { hitText } from "@/components/Tier1ScreenCard";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import ZoneMarker, { markedShapes, type ZoneState } from "@/components/ZoneMarker";
 import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
@@ -15,16 +16,24 @@ import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServ
 import { inr } from "@/lib/format";
 import { canvasToJpeg, firstFrame, markedStills, numberedPile, pileViews, type Frame, type PileViews } from "@/lib/frames";
 import { shrinkClip } from "@/lib/transcode";
-import { useStore } from "@/lib/hooks";
+import { toTuning, useEdgeConfig, useRules, useStore } from "@/lib/hooks";
+import { stamp } from "@/lib/tier1/engine.ts";
+import { scanClip, type ScanResult } from "@/lib/tier1/scanClip";
 import { actionCrop, rectToBox, shapesToHints } from "@/lib/tier1/zones";
 import type { Incident, ReceiptLine, TokenUsage, Transaction } from "@/lib/types";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const CUSTOM = "custom";
+const SCREEN_KEY = "shrinksight.tier1Screen";
 
 export default function InvestigatePage() {
   const { store, error: storeError } = useStore();
+  const { data: rules } = useRules();
   const [cameraId, setCameraId] = useState("cam-sco-1");
+  // Optional Tier-1 screening (off by default, remembered on this browser): Gemini runs only if the gate opens.
+  const [screenOn, setScreenOn] = useState(false);
+  const [screened, setScreened] = useState<ScanResult | null>(null);
+  const [screenNote, setScreenNote] = useState<string | null>(null);
   const [source, setSource] = useState<"upload" | "record">("upload");
   const [clip, setClip] = useState<Blob | null>(null);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
@@ -70,6 +79,16 @@ export default function InvestigatePage() {
 
   const camera = store?.cameras.find((c) => c.id === cameraId);
   const isCheckout = camera?.kind === "checkout";
+  // The same auto-tuned gate this camera uses on Live edge.
+  const { config: edgeConfig } = useEdgeConfig(camera?.id);
+  const gate = toTuning(edgeConfig);
+
+  useEffect(() => setScreenOn(localStorage.getItem(SCREEN_KEY) === "on"), []);
+  const toggleScreen = (on: boolean) => {
+    setScreenOn(on);
+    localStorage.setItem(SCREEN_KEY, on ? "on" : "off");
+    setScreened(null);
+  };
 
   useEffect(() => {
     api
@@ -78,8 +97,11 @@ export default function InvestigatePage() {
       .catch(() => setSavedPhotos({}));
   }, []);
 
-  // A photo picked for one camera's clip doesn't carry over to another camera.
-  useEffect(() => setScannerPhoto(SCANNER_PHOTO_NONE), [cameraId]);
+  // A photo picked for one camera's clip doesn't carry over to another camera; nor does a Tier-1 screening.
+  useEffect(() => {
+    setScannerPhoto(SCANNER_PHOTO_NONE);
+    setScreened(null);
+  }, [cameraId]);
 
   // The camera's saved layout is the starting point; boxes are only sent once they're real.
   useEffect(() => {
@@ -132,6 +154,8 @@ export default function InvestigatePage() {
   const acceptClip = (blob: Blob) => {
     setClipError(null);
     setResult(null);
+    setScreened(null);
+    setScreenNote(null);
     if (blob.size > MAX_BYTES) {
       setClip(null);
       setClipUrl(null);
@@ -146,7 +170,8 @@ export default function InvestigatePage() {
   const receiptReady = !isCheckout || receiptChoice !== CUSTOM || customLines.length > 0;
   const canRun = Boolean(camera && clip && consent && receiptReady && !running);
 
-  const run = async () => {
+  /** sendAnyway: Tier-1 already cleared this clip and staff want Gemini to check it regardless. */
+  const run = async ({ sendAnyway = false }: { sendAnyway?: boolean } = {}) => {
     if (!camera || !clip) return;
     const zonesToSend = zoneState?.send ? markedShapes(zoneState) : [];
     const sendZones = zonesToSend.length > 0;
@@ -171,6 +196,53 @@ export default function InvestigatePage() {
       setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label, done: false }]);
     const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
 
+    // 0. Optional Tier-1 screening on this device. If its gate stays shut, Gemini is not called at all.
+    let handStills: MarkedStill[] = [];
+    let screenedNow = false;
+    setScreenNote(null);
+    const withHints = (scan: ScanResult, verdict: "flagged" | "cleared") => {
+      meta.tier1_screen = verdict;
+      meta.tier1_events = scan.hits.map((hit) => ({ ...hit, camera_id: camera.id }));
+      handStills = scan.hands;
+    };
+    if (screenOn && sendAnyway && screened) {
+      withHints(screened, "cleared");
+      setScreened(null);
+    } else if (screenOn && clipUrl) {
+      setScreened(null);
+      screenedNow = true;
+      setSteps([{ label: "Tier-1 screening on this device · 0%", done: false }]);
+      try {
+        const scan = await scanClip(clipUrl, {
+          cameraKind: camera.kind,
+          zones: zoneState?.shapes ?? [],
+          rules: rules ?? [],
+          tuning: gate,
+          signal: controller.signal,
+          onProgress: (f) => relabel(`Tier-1 screening on this device · ${Math.round(f * 100)}%`),
+        });
+        if (!scan.flagged) {
+          relabel("Tier-1 cleared the clip · Gemini not needed");
+          setSteps((prev) => prev.map((step) => ({ ...step, done: true })));
+          setScreened(scan);
+          setRunning(false);
+          return;
+        }
+        const first = scan.hits[0];
+        relabel(
+          `Tier-1 flagged the clip at ${stamp(scan.openedAtMs ?? 0)}${first ? ` (${hitText(first)})` : scan.reason ? ` (${scan.reason})` : ""}`,
+        );
+        withHints(scan, "flagged");
+      } catch (e) {
+        if ((e as Error).name === "AbortError") {
+          setRunning(false);
+          return;
+        }
+        relabel("Tier-1 screening skipped");
+        setScreenNote(`Tier-1 couldn’t screen this clip (${(e as Error).message}), so Gemini checks it directly.`);
+      }
+    }
+
     // 1. Item-pile inventory: one image-only Gemini call, running while the clip is optimised.
     const pileZone = isCheckout ? zonesToSend.find((z) => z.kind === "pickup") : undefined;
     let pile: PileViews | null = null;
@@ -192,7 +264,9 @@ export default function InvestigatePage() {
     }
 
     // 2. Stills (from the full-resolution original) and the upload-size optimisation run side by side.
-    setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
+    const stillsLabel = sendZones ? "Preparing stills with the marked zones" : "Preparing stills";
+    if (screenedNow) advance(stillsLabel);
+    else setSteps([{ label: stillsLabel, done: false }]);
     // Crop the uploaded video to the marked zones (+30% margin) and draw the zone outlines into it.
     const crop = actionCrop(zonesToSend);
     const [baseStills, shrunk] = await Promise.all([
@@ -207,7 +281,7 @@ export default function InvestigatePage() {
     ]);
     const upload = shrunk.blob;
     if (shrunk.crop) meta.video_crop = rectToBox(shrunk.crop);
-    const stills = [...baseStills];
+    const stills = [...baseStills, ...handStills];
 
     // 3. Use the confirmed list: numbered boxes on the pile close-up, and the list itself for Gemini to track.
     if (pile) {
@@ -279,6 +353,8 @@ export default function InvestigatePage() {
 
   const reset = () => {
     setResult(null);
+    setScreened(null);
+    setScreenNote(null);
     setSteps([]);
     setError(null);
     setClip(null);
@@ -431,22 +507,38 @@ export default function InvestigatePage() {
           <aside className="card stack" aria-labelledby="run-title" style={{ position: "sticky", top: "5rem" }}>
             <h2 id="run-title">{(isCheckout ? 4 : 3) + (clip ? 1 : 0)} · Investigate</h2>
             <label className="row" style={{ alignItems: "flex-start", fontWeight: 400 }}>
+              <input
+                type="checkbox"
+                checked={screenOn}
+                onChange={(e) => toggleScreen(e.target.checked)}
+                style={{ marginTop: 4 }}
+              />
+              <span className="small">
+                <strong>Screen with Tier-1 first</strong> (on this device, free). Gemini only runs if this camera’s Tier-1
+                gate opens, as on Live edge.
+              </span>
+            </label>
+            <label className="row" style={{ alignItems: "flex-start", fontWeight: 400 }}>
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 4 }} />
               <span className="small">
                 Everyone in this clip agreed to be recorded (for example, it’s you). The clip is analysed by Gemini and not
                 stored; only the report is kept.
               </span>
             </label>
-            <button type="button" className="btn btn-primary" disabled={!canRun} onClick={run}>
-              {running ? "Investigating…" : "Investigate with Gemini"}
+            <button type="button" className="btn btn-primary" disabled={!canRun} onClick={() => run()}>
+              {running ? "Investigating…" : screenOn ? "Screen with Tier-1, then Gemini" : "Investigate with Gemini"}
             </button>
             {!clip && <span className="hint">Add a clip to start.</span>}
             {clip && !receiptReady && <span className="hint">Add at least one scanned item.</span>}
             {clip && receiptReady && !consent && <span className="hint">Tick the consent box to continue.</span>}
             {steps.length > 0 && <ProgressSteps steps={steps} running={running} />}
+            {screened && !running && (
+              <Tier1ScreenCard result={screened} gate={gate} canSend={canRun} onSendAnyway={() => run({ sendAnyway: true })} />
+            )}
+            {screenNote && <p className="hint" style={{ margin: 0 }}>{screenNote}</p>}
             <InventoryConfirm state={inventory} onChange={setInventory} />
             {error && (
-              <ErrorNotice onRetry={canRun ? run : undefined}>{error}</ErrorNotice>
+              <ErrorNotice onRetry={canRun ? () => run() : undefined}>{error}</ErrorNotice>
             )}
             <p className="hint" style={{ margin: 0 }}>
               Free-tier AI quota is shared, so investigations are rate-limited. Re-running the same clip is instant.

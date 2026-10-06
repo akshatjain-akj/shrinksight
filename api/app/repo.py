@@ -102,6 +102,13 @@ def _seed_documents() -> dict[str, dict[str, dict]]:
     }
 
 
+def _seed_camera(doc: dict, zones: list[dict], gone: set[str]) -> dict:
+    """A seed camera as re-seeding should write it: zones the store added stay attached, deleted ones stay gone."""
+    ids = [zone_id for zone_id in doc.get("zone_ids") or [] if zone_id not in gone]
+    ids += [z["id"] for z in zones if z.get("camera_id") == doc["id"] and z["id"] not in ids and z["id"] not in gone]
+    return {**doc, "zone_ids": ids}
+
+
 class MemoryRepo:
     def __init__(self, seeded: bool = True):
         self._data: dict[str, dict[str, dict]] = {}
@@ -123,6 +130,12 @@ class MemoryRepo:
                         bucket.setdefault(doc_id, doc)
                     else:
                         bucket[doc_id] = doc
+            # Zones are seeded before cameras are fixed up, so a seed camera keeps zones added to it.
+            gone = {doc_id for collection, doc_id in self._suppressed if collection == "zones"}
+            zones = list(self._data.get("zones", {}).values())
+            cameras = self._data.get("cameras", {})
+            for camera_id in [c.id for c in seed.CAMERAS if c.id in cameras]:
+                cameras[camera_id] = _seed_camera(cameras[camera_id], zones, gone)
 
     def _all(self, collection: str) -> list[dict]:
         return list(self._data.get(collection, {}).values())
@@ -325,8 +338,11 @@ class FirestoreRepo:
         snapshot = meta.get()
         if not snapshot.exists or (snapshot.to_dict() or {}).get("version") != seed.SEED_VERSION:
             batch = self._db.batch()
+            zones = self._all("zones")
             for collection, docs in _seed_documents().items():
                 for doc_id, doc in docs.items():
+                    if collection == "cameras":
+                        doc = _seed_camera(doc, zones, set())
                     batch.set(self._db.collection(collection).document(doc_id), doc)
             batch.set(meta, {"version": seed.SEED_VERSION})
             batch.commit()

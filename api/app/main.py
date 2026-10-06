@@ -30,6 +30,7 @@ from .models import (
     ReceiptLine,
     Rule,
     RuleSpec,
+    Tier1Screen,
     TokenUsage,
     Transaction,
     UserAccount,
@@ -264,6 +265,7 @@ def create_zone(body: ZoneIn, request: Request) -> dict:
     require_manager(request)
     repo = get_repo()
     camera = _camera_or_404(repo, body.camera_id)
+    enforce_limits(request, repo, "layouts", cfg().daily_layout_saves)
     zone = Zone(
         id=f"z-{uuid.uuid4().hex[:8]}",
         name=body.name.strip(),
@@ -284,10 +286,14 @@ def remove_zone(zone_id: str, request: Request) -> dict:
     zone = next((item for item in repo.zones() if item.id == zone_id), None)
     if zone is None:
         raise HTTPException(404, "Zone not found")
-    used = [rule.spec.summary for rule in repo.rules() if rule.enabled and rule.spec.zone_id == zone_id]
-    if used:
-        raise HTTPException(400, f"A rule still uses {zone.name}. Turn that rule off or point it somewhere else first.")
+    # Disabled rules count too: turning one back on must not leave it pointing at a deleted zone.
+    if any(rule.spec.zone_id == zone_id for rule in repo.rules()):
+        raise HTTPException(400, f"A rule still uses {zone.name}. Delete that rule or point it somewhere else first.")
     repo.delete_zone(zone.id)
+    layout = repo.get_layout(zone.camera_id)
+    if layout is not None and any(hint.zone_id == zone.id for hint in layout.zones):
+        kept = [hint for hint in layout.zones if hint.zone_id != zone.id]
+        repo.save_layout(layout.model_copy(update={"zones": kept, "updated_at": _now_iso()}))
     return {"deleted": zone.id}
 
 
@@ -405,6 +411,7 @@ def save_camera_prefs(camera_id: str, body: CameraPrefsIn, request: Request) -> 
     require_manager(request)
     repo = get_repo()
     camera = _camera_or_404(repo, camera_id)
+    enforce_limits(request, repo, "layouts", cfg().daily_layout_saves)
     prefs = CameraPrefs(camera_id=camera.id, **body.model_dump())
     repo.save_camera_prefs(prefs)
     return prefs.model_dump()
@@ -731,6 +738,8 @@ class InvestigateMeta(BaseModel):
     scanner_photo: Literal["saved", "none"] = "saved"
     # Tokens the item-pile inventory call used (shown on the incident for monitoring)
     inventory_usage: TokenUsage | None = None
+    # Investigate's on-device Tier-1 screening result, when it ran ("cleared" = sent anyway)
+    tier1_screen: Tier1Screen | None = None
 
 
 def enforce_app_check(request: Request) -> None:
@@ -881,6 +890,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             origin=meta.origin,
             edge_confidence=edge_confidence,
             inventory_usage=meta.inventory_usage,
+            tier1_screen=meta.tier1_screen,
         ):
             if event["type"] == "result" and meta.origin == "edge" and not event.get("cached"):
                 _retune(repo, camera.id)

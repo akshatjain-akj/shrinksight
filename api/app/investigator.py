@@ -449,6 +449,7 @@ def investigate(
     origin: str | None = None,
     edge_confidence: float | None = None,
     inventory_usage: TokenUsage | None = None,
+    tier1_screen: str | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event.
 
@@ -464,7 +465,7 @@ def investigate(
     remembered = camera_memory.pick(memory or [], settings.memory_examples)
     photo_hash = hashlib.sha256(scanner_photo).hexdigest()[:16] if scanner_photo else ""
     variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps(
-        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash]
+        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash, tier1_screen]
     )
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
@@ -607,6 +608,7 @@ def investigate(
         incident.zones_used = zones
         incident.origin = origin
         incident.edge_confidence = edge_confidence
+        incident.tier1_screen = tier1_screen
         incident.usage = TokenUsage(**usage) if usage else None
         incident.inventory_usage = inventory_usage
         incident.memory_used = camera_memory.refs(remembered)

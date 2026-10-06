@@ -1,11 +1,12 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import CameraConfig from "@/components/CameraConfig";
 import RoleConfig from "@/components/RoleConfig";
 import RulesDesk from "@/components/RulesDesk";
 import ZoneConfig from "@/components/ZoneConfig";
+import { Spinner } from "@/components/ui";
 
 const SECTIONS = [
   { id: "cameras", label: "Cameras", hint: "Lanes and detection" },
@@ -20,7 +21,16 @@ function isSection(value: string | null): value is SectionId {
   return value === "cameras" || value === "zones" || value === "rules" || value === "roles";
 }
 
+// useSearchParams needs a Suspense boundary for the static export.
 export default function SettingsPage() {
+  return (
+    <Suspense fallback={<Spinner label="Opening settings…" />}>
+      <SettingsContent />
+    </Suspense>
+  );
+}
+
+function SettingsContent() {
   const params = useSearchParams();
   const requested = params.get("section");
   const [section, setSection] = useState<SectionId>(isSection(requested) ? requested : "cameras");

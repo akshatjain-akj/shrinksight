@@ -194,6 +194,8 @@ export interface Incident {
   /** "edge" when the Live edge gate sent the clip. */
   origin?: "edge" | "upload" | null;
   edge_confidence?: number | null;
+  /** Investigate's on-device Tier-1 screening: its gate opened, or it cleared the clip and staff sent it anyway. */
+  tier1_screen?: "flagged" | "cleared" | null;
   usage?: TokenUsage | null;
   inventory_usage?: TokenUsage | null;
   memory_used?: MemoryRef[];
