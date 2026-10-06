@@ -794,6 +794,18 @@ button.chip[aria-pressed="true"] {
   color: #e2e8f0;
   font-weight: 500;
 }
+.screen-card {
+  gap: 0.45rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid #34d399;
+  border-radius: 8px;
+  background: rgb(52 211 153 / 0.06);
+}
+.screen-seen {
+  margin: 0;
+  padding-left: 1.1rem;
+}
 .mark-note {
   margin: 0.35rem 0 0;
 }

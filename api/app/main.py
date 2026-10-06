@@ -29,6 +29,7 @@ from .models import (
     ReceiptLine,
     Rule,
     RuleSpec,
+    Tier1Screen,
     TokenUsage,
     Transaction,
     UserAccount,
@@ -662,6 +663,8 @@ class InvestigateMeta(BaseModel):
     scanner_photo: Literal["saved", "none"] = "saved"
     # Tokens the item-pile inventory call used (shown on the incident for monitoring)
     inventory_usage: TokenUsage | None = None
+    # Investigate's on-device Tier-1 screening result, when it ran ("cleared" = sent anyway)
+    tier1_screen: Tier1Screen | None = None
 
 
 def enforce_app_check(request: Request) -> None:
@@ -812,6 +815,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             origin=meta.origin,
             edge_confidence=edge_confidence,
             inventory_usage=meta.inventory_usage,
+            tier1_screen=meta.tier1_screen,
         ):
             if event["type"] == "result" and meta.origin == "edge" and not event.get("cached"):
                 _retune(repo, camera.id)
