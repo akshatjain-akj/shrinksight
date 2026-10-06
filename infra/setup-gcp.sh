@@ -4,8 +4,14 @@
 #
 #   bash setup-gcp.sh
 #
+# The login session key (auth-secret) is random by default. To choose it (32+ characters), or to replace
+# an existing one, type it hidden first so it stays out of shell history:
+#
+#   read -rsp "Session key: " AUTH_SECRET_VALUE; echo; export AUTH_SECRET_VALUE
+#   bash setup-gcp.sh; unset AUTH_SECRET_VALUE
+#
 # Creates: Artifact Registry repo (+cleanup), 2 service accounts with minimal roles,
-# evidence bucket (24h lifecycle), Gemini secret (hidden input), keyless GitHub -> GCP trust (WIF).
+# evidence bucket (24h lifecycle), Gemini secret (hidden input), login session key, keyless GitHub -> GCP trust (WIF).
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-shrinksight-app}"
@@ -103,11 +109,18 @@ fi
 gcloud secrets add-iam-policy-binding "$SECRET" --member "serviceAccount:$RUNTIME_SA" \
   --role roles/secretmanager.secretAccessor >/dev/null
 
-# Session-signing key for logins. Random, never typed or shown; rotating it signs everyone out.
+# Session-signing key for logins. Random unless AUTH_SECRET_VALUE is set; changing it signs everyone out.
 if ! exists gcloud secrets describe "$AUTH_SECRET_NAME"; then
-  openssl rand -hex 32 | tr -d '\n' | gcloud secrets create "$AUTH_SECRET_NAME" --replication-policy automatic --data-file=-
+  AUTH_VALUE="${AUTH_SECRET_VALUE:-$(openssl rand -hex 32)}"
+  [ "${#AUTH_VALUE}" -ge 32 ] || { echo "AUTH_SECRET_VALUE needs at least 32 characters, aborting."; exit 1; }
+  printf '%s' "$AUTH_VALUE" | gcloud secrets create "$AUTH_SECRET_NAME" --replication-policy automatic --data-file=-
+  unset AUTH_VALUE
+elif [ -n "${AUTH_SECRET_VALUE:-}" ]; then
+  [ "${#AUTH_SECRET_VALUE}" -ge 32 ] || { echo "AUTH_SECRET_VALUE needs at least 32 characters, aborting."; exit 1; }
+  printf '%s' "$AUTH_SECRET_VALUE" | gcloud secrets versions add "$AUTH_SECRET_NAME" --data-file=-
+  echo "Secret $AUTH_SECRET_NAME updated: everyone is signed out after the next deploy"
 else
-  echo "Secret $AUTH_SECRET_NAME already exists"
+  echo "Secret $AUTH_SECRET_NAME already exists (to set your own: see the header of this file)"
 fi
 gcloud secrets add-iam-policy-binding "$AUTH_SECRET_NAME" --member "serviceAccount:$RUNTIME_SA" \
   --role roles/secretmanager.secretAccessor >/dev/null
