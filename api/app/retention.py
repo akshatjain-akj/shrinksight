@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 FALSE_ALARM_SECONDS = 24 * 60 * 60
 REAL_EVENT_SECONDS = 7 * 24 * 60 * 60
 REAL_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
+# The purge sweeps at most this often per instance, so listing incidents stays cheap on Firestore reads
+PURGE_EVERY_S = 60 * 60
 
 
 def _created(doc: dict) -> datetime | None:
@@ -42,6 +44,12 @@ def keep_seconds(doc: dict) -> int:
     if is_false_alarm(doc):
         return FALSE_ALARM_SECONDS
     return REAL_EVENT_SECONDS
+
+
+def oldest_kept_iso(now: datetime | None = None) -> str:
+    """Anything created after this is younger than the shortest retention, so the purge never needs to read it."""
+    moment = (now or datetime.now(UTC)).timestamp() - FALSE_ALARM_SECONDS
+    return datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def is_expired(doc: dict, now: datetime | None = None) -> bool:

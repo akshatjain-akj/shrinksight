@@ -37,7 +37,14 @@ from .models import (
     validate_rule_spec,
     validate_zone_hints,
 )
-from .profiles import issue_google_session, issue_session, principal_from_header
+from .profiles import (
+    LOGIN_FAILS_MAX,
+    LOGIN_WINDOW_S,
+    failed_login_key,
+    issue_google_session,
+    issue_session,
+    principal_from_header,
+)
 from .repo import FirestoreRepo, MemoryRepo, Repo
 from .rules_compiler import compile_rule
 from .seed import STORE_NAME
@@ -128,8 +135,14 @@ def open_session(body: SessionIn) -> dict:
     current = cfg()
     if not current.profiles_on:
         raise HTTPException(503, "Profiles are not configured")
-    issued = issue_session(current, get_repo(), body.email, body.password, body.remember)
+    repo = get_repo()
+    fail_key, retry_after = failed_login_key(body.email)
+    if repo.count(fail_key) >= LOGIN_FAILS_MAX:
+        raise HTTPException(429, "Too many failed sign-ins for this email. Please wait a few minutes and try again.",
+                            headers={"Retry-After": str(retry_after)})
+    issued = issue_session(current, repo, body.email, body.password, body.remember)
     if issued is None:
+        repo.incr(fail_key, ttl_s=2 * LOGIN_WINDOW_S)
         raise HTTPException(401, "Email or password is not recognised")
     return issued
 

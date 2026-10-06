@@ -1,8 +1,9 @@
 import time
 
+from app import profiles
 from app.config import Settings
 from app.main import app
-from app.profiles import REMEMBER_TTL_S, TOKEN_TTL_S
+from app.profiles import LOGIN_FAILS_MAX, LOGIN_WINDOW_S, REMEMBER_TTL_S, TOKEN_TTL_S
 from app.seed import SEED_PASSWORD
 
 
@@ -128,3 +129,35 @@ def test_google_sign_in_works_only_for_roster_members(api):
         assert api.post("/api/session/google", json={"id_token": "tok-forged-0000000000"}).status_code == 401
     finally:
         app.state.google_verifier = None
+
+
+def test_ten_failed_sign_ins_lock_that_email_for_the_window(api):
+    app.state.settings = _secret()
+    wrong = {"email": "skcorinva@gmail.com", "password": "nope-nope"}
+
+    for _ in range(LOGIN_FAILS_MAX):
+        assert api.post("/api/session", json=wrong).status_code == 401
+
+    locked = api.post("/api/session", json={**wrong, "password": SEED_PASSWORD})
+    assert locked.status_code == 429
+    assert 0 < int(locked.headers["retry-after"]) <= LOGIN_WINDOW_S + 1
+
+    other = api.post("/api/session", json={"email": "avni.rocks17@gmail.com", "password": SEED_PASSWORD})
+    assert other.status_code == 200
+
+
+def test_successful_sign_ins_do_not_count_towards_the_lock(api):
+    app.state.settings = _secret()
+    creds = {"email": "skcorinva@gmail.com", "password": SEED_PASSWORD}
+    for _ in range(LOGIN_FAILS_MAX + 2):
+        assert api.post("/api/session", json=creds).status_code == 200
+
+
+def test_unknown_email_still_runs_the_password_hash(api, monkeypatch):
+    app.state.settings = _secret()
+    calls = []
+    real = profiles.hash_password
+    monkeypatch.setattr(profiles, "hash_password", lambda password, salt: calls.append(salt) or real(password, salt))
+
+    assert api.post("/api/session", json={"email": "nobody@example.com", "password": "whatever"}).status_code == 401
+    assert len(calls) == 1

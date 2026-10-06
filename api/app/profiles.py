@@ -21,6 +21,11 @@ TOKEN_TTL_S = 12 * 60 * 60
 # "Remember me" on the login page asks for a longer token
 REMEMBER_TTL_S = 30 * 24 * 60 * 60
 PBKDF2_ROUNDS = 120_000
+# Failed password sign-ins per email per fixed window, then /api/session answers 429 until the window ends
+LOGIN_FAILS_MAX = 10
+LOGIN_WINDOW_S = 15 * 60
+# Hashed against when the email is unknown, so a miss costs the same time as a wrong password
+_DUMMY_SALT = "shrinksight-no-such-user"
 
 
 @dataclass(frozen=True)
@@ -33,11 +38,21 @@ def hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ROUNDS).hex()
 
 
-def _password_ok(password: str, user: UserAccount) -> bool:
-    if not password or not user.enabled:
+def _password_ok(password: str, user: UserAccount | None) -> bool:
+    # Always hash once, so unknown and disabled accounts answer as slowly as a wrong password
+    digest = hash_password(password, user.password_salt if user else _DUMMY_SALT)
+    if user is None or not password or not user.enabled:
         return False
-    digest = hash_password(password, user.password_salt)
     return hmac.compare_digest(digest, user.password_hash)
+
+
+def failed_login_key(email: str, now: float | None = None) -> tuple[str, int]:
+    """Counter key for this email's current window, and seconds until that window ends."""
+    moment = time.time() if now is None else now
+    window = int(moment // LOGIN_WINDOW_S)
+    # Hashed so the counter id holds no email and no characters Firestore rejects
+    who = hashlib.sha256(email.strip().lower().encode()).hexdigest()[:24]
+    return f"login-fail-{who}-{window}", int((window + 1) * LOGIN_WINDOW_S - moment) + 1
 
 
 def _sign(secret: str, body: str) -> str:
@@ -46,7 +61,7 @@ def _sign(secret: str, body: str) -> str:
 
 def issue_session(settings: Settings, repo, email: str, password: str, remember: bool = False) -> dict | None:
     user = repo.get_user_by_email(email)
-    if user is None or not _password_ok(password, user):
+    if not _password_ok(password, user):
         return None
     return _mint(settings, user, remember)
 

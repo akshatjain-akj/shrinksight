@@ -38,6 +38,7 @@ class Repo(Protocol):
     def cache_get(self, key: str) -> dict | None: ...
     def cache_put(self, key: str, value: dict) -> None: ...
     def incr(self, key: str, ttl_s: int) -> int: ...
+    def count(self, key: str) -> int: ...
     def layouts(self) -> dict[str, CameraLayout]: ...
     def get_layout(self, camera_id: str) -> CameraLayout | None: ...
     def save_layout(self, layout: CameraLayout) -> None: ...
@@ -91,6 +92,7 @@ class MemoryRepo:
         self._data: dict[str, dict[str, dict]] = {}
         self._lock = threading.Lock()
         self._suppressed: set[tuple[str, str]] = set()
+        self._purged_at = 0.0
         if seeded:
             self.ensure_seeded()
 
@@ -172,16 +174,16 @@ class MemoryRepo:
         self._put("incidents", incident.id, incident.model_dump())
 
     def delete_incident(self, incident_id: str) -> None:
+        # Feedback stays: it is the camera memory, and it outlives the incident it came from
         with self._lock:
             self._data.get("incidents", {}).pop(incident_id, None)
-            feedback = self._data.get("feedback", {})
-            for key, doc in list(feedback.items()):
-                if key == incident_id or doc.get("incident_id") == incident_id:
-                    feedback.pop(key, None)
 
     def purge_expired(self) -> int:
-        from .retention import is_expired
+        from .retention import PURGE_EVERY_S, is_expired
 
+        if time.time() - self._purged_at < PURGE_EVERY_S:
+            return 0
+        self._purged_at = time.time()
         gone = [doc["id"] for doc in self._all("incidents") if is_expired(doc)]
         for incident_id in gone:
             self.delete_incident(incident_id)
@@ -230,6 +232,9 @@ class MemoryRepo:
             counters[key] = {"n": counters.get(key, {}).get("n", 0) + 1}
             return counters[key]["n"]
 
+    def count(self, key: str) -> int:
+        return int((self._get("counters", key) or {}).get("n", 0))
+
     def layouts(self) -> dict[str, CameraLayout]:
         return {d["camera_id"]: CameraLayout(**d) for d in self._all("layouts")}
 
@@ -277,6 +282,7 @@ class FirestoreRepo:
         self._fs = firestore
         self._db = firestore.Client(project=project or None)
         self._seeded = False
+        self._purged_at = 0.0
 
     def ensure_seeded(self) -> None:
         """Writes seed documents once per seed version. Cheap after the first call per instance."""
@@ -361,17 +367,19 @@ class FirestoreRepo:
         self._put("incidents", incident.id, incident.model_dump())
 
     def delete_incident(self, incident_id: str) -> None:
+        # Feedback stays: it is the camera memory, and it outlives the incident it came from
         self._db.collection("incidents").document(incident_id).delete()
-        self._db.collection("feedback").document(incident_id).delete()
 
     def purge_expired(self) -> int:
-        from .retention import is_expired
+        from .retention import PURGE_EVERY_S, is_expired, oldest_kept_iso
 
-        gone = [
-            snap.id
-            for snap in self._db.collection("incidents").stream()
-            if is_expired({**(snap.to_dict() or {}), "id": snap.id})
-        ]
+        if time.time() - self._purged_at < PURGE_EVERY_S:
+            return 0
+        self._purged_at = time.time()
+        # Only incidents older than the shortest retention can be due, so younger ones are never read
+        cutoff = self._fs.FieldFilter("created_at", "<", oldest_kept_iso())
+        older = self._db.collection("incidents").where(filter=cutoff)
+        gone = [snap.id for snap in older.stream() if is_expired({**(snap.to_dict() or {}), "id": snap.id})]
         for incident_id in gone:
             self.delete_incident(incident_id)
         return len(gone)
@@ -417,6 +425,9 @@ class FirestoreRepo:
         ref = self._db.collection("counters").document(key)
         ref.set({"n": self._fs.Increment(1), "expire_at": time.time() + ttl_s}, merge=True)
         return int((ref.get().to_dict() or {}).get("n", 1))
+
+    def count(self, key: str) -> int:
+        return int((self._get("counters", key) or {}).get("n", 0))
 
     def layouts(self) -> dict[str, CameraLayout]:
         return {d["camera_id"]: CameraLayout(**d) for d in self._all("layouts")}
