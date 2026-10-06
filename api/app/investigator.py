@@ -35,6 +35,7 @@ from .models import (
     Incident,
     InventoryItem,
     ReceiptLine,
+    Tier1Measure,
     TokenUsage,
     ToolCallLog,
     Transaction,
@@ -52,6 +53,7 @@ from .reconcile import (
     reconcile,
 )
 from .repo import Repo, match_sku
+from .tier1 import apply_tier1_rule, close_up_text, measure_text
 from .zones import from_crop, zones_context
 
 # A backup model only helps if it can still watch the whole clip; re-checks need a little less.
@@ -59,8 +61,11 @@ BACKUP_MIN_SECONDS = 20
 RECHECK_MIN_SECONDS = 15
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-06.item-moment"
-CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end", "hand_reach", "hand_hold"}
+PROMPT_VERSION = "2026-10-07.tier1-measurements"
+TIER1_CLOSE_UPS = (*(f"hand_{n}" for n in range(1, 5)), *(f"trip_{n}" for n in range(1, 7)))
+CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end", "hand_reach", "hand_hold", *TIER1_CLOSE_UPS}
+# Live edge hint kinds that say "nothing happened": a wrong one only talks Gemini out of a real theft.
+UNSENT_HINTS = {"PUT_BACK"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
                 "video/mov": "video/mov", "video/3gpp": "video/3gpp"}
@@ -252,10 +257,13 @@ def _context_text(
     marked = zones_context(hints or [], all_zones, crop)
     if marked:
         text += "\n\n" + marked
-    if not tier1_events:
+    events = [e for e in tier1_events or [] if e.get("kind") not in UNSENT_HINTS]
+    if not events:
         return text
-    hints = "\n".join(_hint_line(e) for e in tier1_events[:12])
-    header = "On-device Tier-1 hints (times are from the start of this clip; verify on the clip, they are not proof):"
+    hints = "\n".join(_hint_line(e) for e in events[:12])
+    header = ("On-device Tier-1 hints (times are from the start of this clip). They come from a pose heuristic and are "
+              "often wrong: use them only as moments to look at, decide from the clip, and if a hint disagrees with "
+              "the video, trust the video:")
     return f"{text}\n\n{header}\n{hints}"
 
 
@@ -292,7 +300,9 @@ def _resolution(types, level: str, plain: bool):
     return types.PartMediaResolution(level=getattr(types.PartMediaResolutionLevel, f"MEDIA_RESOLUTION_{level}"))
 
 
-def _still_parts(types, stills: list[tuple[str, bytes]], plain: bool = False) -> list:
+def _still_parts(
+    types, stills: list[tuple[str, bytes]], plain: bool = False, captions: dict[str, str] | None = None
+) -> list:
     if not stills:
         return []
     labels = ", ".join(label.replace("_", " ") for label, _ in stills)
@@ -301,7 +311,8 @@ def _still_parts(types, stills: list[tuple[str, bytes]], plain: bool = False) ->
         "rectangle marks the person when present. The video follows."
     )]
     for label, data in stills:
-        parts.append(types.Part.from_text(text=STILL_TEXT.get(label, f"Still: {label.replace('_', ' ')}")))
+        caption = (captions or {}).get(label) or STILL_TEXT.get(label, f"Still: {label.replace('_', ' ')}")
+        parts.append(types.Part.from_text(text=caption))
         # Only the item-pile close-up needs full detail (it's where items are counted); the rest stay light so
         # Gemini answers faster.
         level = "HIGH" if label == "pickup_start" else "MEDIUM" if label in CLOSE_UP_LABELS else "LOW"
@@ -450,6 +461,7 @@ def investigate(
     edge_confidence: float | None = None,
     inventory_usage: TokenUsage | None = None,
     tier1_screen: str | None = None,
+    tier1_measure: Tier1Measure | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event.
 
@@ -465,7 +477,8 @@ def investigate(
     remembered = camera_memory.pick(memory or [], settings.memory_examples)
     photo_hash = hashlib.sha256(scanner_photo).hexdigest()[:16] if scanner_photo else ""
     variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps(
-        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash, tier1_screen]
+        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash, tier1_screen,
+         tier1_measure.model_dump() if tier1_measure else None]
     )
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
@@ -493,9 +506,12 @@ def investigate(
             tool_results.append({"tool": name, "args": args, "result": toolbox.run(name, args)})
         receipt = _receipt_lines(transaction, tool_results) if camera.kind == "checkout" else []
         context = _context_text(camera, repo, tier1_events, zones, video_crop)
-        marked = _scanner_ref_parts(types, scanner_photo) + _still_parts(types, stills or [])
+        if tier1_measure is not None:
+            context += "\n\n" + measure_text(tier1_measure)
+        captions = close_up_text(tier1_measure)
+        marked = _scanner_ref_parts(types, scanner_photo) + _still_parts(types, stills or [], captions=captions)
         marked_plain = [*_scanner_ref_parts(types, scanner_photo, plain=True),
-                        *_still_parts(types, stills or [], plain=True)]
+                        *_still_parts(types, stills or [], plain=True, captions=captions)]
         if remembered:
             yield _progress("memory", f"Using {len(remembered)} past decision{'s' if len(remembered) != 1 else ''} "
                             "from this camera")
@@ -599,6 +615,11 @@ def investigate(
             verdict, receipt_note, overridden = apply_receipt_rule(verdict, receipt)
         elif camera.kind == "floor":
             verdict, receipt_note, overridden = apply_floor_rule(verdict)
+        # Tier-1 safety rule: Gemini can't clear a clip the hand measurements say needs a look.
+        verdict, tier1_note = apply_tier1_rule(verdict, tier1_measure, receipt)
+        if tier1_note:
+            receipt_note = f"{receipt_note} {tier1_note}" if receipt_note else tier1_note
+            overridden = True
 
         # ---- 6. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
@@ -609,6 +630,7 @@ def investigate(
         incident.origin = origin
         incident.edge_confidence = edge_confidence
         incident.tier1_screen = tier1_screen
+        incident.tier1_measure = tier1_measure
         incident.usage = TokenUsage(**usage) if usage else None
         incident.inventory_usage = inventory_usage
         incident.memory_used = camera_memory.refs(remembered)

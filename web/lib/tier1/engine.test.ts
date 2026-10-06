@@ -479,3 +479,59 @@ test("the tracker applies a re-tuned gate to people already in frame and to new 
   assert.equal(engines.length, 2);
   assert.ok(engines.every((engine) => engine.tuning === strict));
 });
+
+test("a clip that starts at 0 ms has no put-back before any reach", () => {
+  const engine = new Tier1Engine("floor", floorZones, [], () => new Date("2026-10-04T12:00:00"));
+  const tick = engine.tick({
+    tMs: 0,
+    present: true,
+    leftShoulder: { x: 0.7, y: 0.3 },
+    leftHip: { x: 0.7, y: 0.62 },
+    rightHip: { x: 0.76, y: 0.62 },
+    leftWrist: { x: 0.7, y: 0.6 },
+  });
+  assert.equal(tick.hits.some((hit) => hit.kind === "PUT_BACK"), false);
+  assert.equal(tick.score, 0);
+});
+
+/** The jacket-pocket hide above, shrunk to 40% around (0.3, 0.3): the same shopper further from the camera. */
+const far = (p: { x: number; y: number }) => ({ x: 0.3 + (p.x - 0.3) * 0.4, y: 0.3 + (p.y - 0.3) * 0.4 });
+
+test("a distant shopper's reach and pocket hide are measured in body lengths, not frame units", () => {
+  const engine = new Tier1Engine("floor", floorZones, [], () => new Date("2026-10-04T12:00:00"));
+  let reached = false;
+  let fired = false;
+  for (let i = 0; i < 30; i++) {
+    const tick = engine.tick({
+      tMs: i * 100,
+      present: true,
+      leftShoulder: far({ x: 0.32, y: 0.22 }),
+      leftHip: far({ x: 0.34, y: 0.62 }),
+      rightHip: far({ x: 0.42, y: 0.62 }),
+      leftWrist: far(i < 6 ? { x: 0.62, y: 0.4 } : { x: 0.38, y: 0.5 }),
+    });
+    reached ||= tick.reachAtMs != null;
+    fired ||= tick.hits.some((hit) => hit.kind === "CONCEALMENT");
+  }
+  assert.equal(reached, true);
+  assert.equal(fired, true);
+});
+
+test("a distant shopper standing with hands down fires nothing", () => {
+  const engine = new Tier1Engine("floor", floorZones, [], () => new Date("2026-10-04T12:00:00"));
+  let fired = false;
+  for (let i = 0; i < 40; i++) {
+    const tick = engine.tick({
+      tMs: i * 100,
+      present: true,
+      leftShoulder: far({ x: 0.3, y: 0.22 }),
+      rightShoulder: far({ x: 0.46, y: 0.22 }),
+      leftHip: far({ x: 0.32, y: 0.62 }),
+      rightHip: far({ x: 0.44, y: 0.62 }),
+      leftWrist: far({ x: 0.28, y: 0.66 }),
+      rightWrist: far({ x: 0.48, y: 0.66 }),
+    });
+    fired ||= tick.hits.length > 0 || tick.shouldSend;
+  }
+  assert.equal(fired, false);
+});

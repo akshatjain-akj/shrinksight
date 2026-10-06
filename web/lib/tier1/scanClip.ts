@@ -3,6 +3,7 @@
 /**
  * Investigate's optional Tier-1 screening: steps through an uploaded clip on this device and runs the Live edge
  * tracker and gate on it, faster than real time where the laptop allows. Nothing leaves the browser.
+ * It also measures what the main shopper's hands did (measure.ts), with hand close-ups at those moments.
  */
 
 import { openVideo, seek } from "../frames";
@@ -10,6 +11,7 @@ import type { Rule } from "../types";
 import { Tier1Engine, type EdgeTuning } from "./engine.ts";
 import type { Pt, ZoneShape } from "./geometry.ts";
 import { PoseSmoother } from "./oneEuro.ts";
+import { ClipMeasure, type CloseUpMoment, type Measurements } from "./measure.ts";
 import { posePeople } from "./people.ts";
 import { ClipScreen, SAMPLE_MS, type ScreenResult } from "./screen.ts";
 import { handRect } from "./stills.ts";
@@ -26,8 +28,10 @@ export interface ScanOptions {
 }
 
 export interface ScanResult extends ScreenResult {
-  /** Hand close-ups (from the original video) at the reach and the possible hide, when wrists were visible. */
-  hands: { label: "hand_reach" | "hand_hold"; blob: Blob }[];
+  /** What the main shopper's hands did: times and places only. */
+  measured: Measurements;
+  /** Hand close-ups (from the original video) at the measured moments, when wrists were visible. */
+  closeUps: (CloseUpMoment & { blob: Blob })[];
   seconds: number;
 }
 
@@ -44,6 +48,7 @@ export async function scanClip(url: string, options: ScanOptions): Promise<ScanR
     // Checkout: after a real signal, the shopper leaving the lane also opens the gate (Live edge's default).
     tracker.setLaneLeave(options.cameraKind === "checkout");
     const screen = new ClipScreen(tracker);
+    const measure = new ClipMeasure(options.cameraKind, options.zones);
     const smoother = new PoseSmoother();
     const wrists = new Map<number, Pt[]>();
     const totalMs = Math.floor(duration * 1000);
@@ -58,24 +63,23 @@ export async function scanClip(url: string, options: ScanOptions): Promise<ScanR
       const points = [first?.leftWrist, first?.rightWrist].filter((p): p is Pt => Boolean(p));
       if (points.length) wrists.set(tMs, points);
       screen.feed(tMs, people);
+      // people[0] is the biggest body in view: the shopper the clip is about.
+      measure.feed(tMs, people[0]?.sample ?? null);
       options.onProgress?.(Math.min(1, tMs / totalMs));
     }
 
     const result = screen.result();
-    const hands: ScanResult["hands"] = [];
+    const measured = measure.result();
+    const closeUps: ScanResult["closeUps"] = [];
     const used = new Set<number>();
-    const moments = [
-      ["hand_reach", result.reachAtMs],
-      ["hand_hold", result.holdAtMs],
-    ] as const;
-    for (const [label, atMs] of moments) {
-      const at = atMs == null ? null : nearestSample(wrists, atMs);
+    for (const moment of ClipMeasure.closeUps(measured, measured.trips ? 6 : 4)) {
+      const at = nearestSample(wrists, moment.t_s * 1000);
       if (at == null || used.has(at)) continue; // never the same frame twice
       used.add(at);
       const blob = await handShot(video, at, wrists.get(at)!);
-      if (blob) hands.push({ label, blob });
+      if (blob) closeUps.push({ ...moment, label: `${moment.moment === "bagging" ? "trip" : "hand"}_${closeUps.length + 1}`, blob });
     }
-    return { ...result, hands, seconds: duration };
+    return { ...result, measured, closeUps, seconds: duration };
   } finally {
     pose.close();
     video.removeAttribute("src");

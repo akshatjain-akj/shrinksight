@@ -99,20 +99,28 @@ erDiagram
 
 ## Built Tier-1 screening on Investigate
 
-An optional checkbox on Investigate (off by default, remembered per browser) runs the two tiers on one uploaded clip:
+An optional checkbox on Investigate (off by default, remembered per browser) runs Tier-1 on one uploaded clip and
+**shows its result before anything goes to Gemini**, so Tier-1's own accuracy can be tested at no quota cost:
 
-- **Scan on the device** (`web/lib/tier1/scanClip.ts`, `screen.ts`): the clip is stepped through every 100 ms of clip
-  time (faster than real time where the laptop allows) with MediaPipe pose, the same person tracker, rule engines and
-  the camera's auto-tuned gate as Live edge. Each pose sample is ticked three times, so "hot frames" mean what they
-  mean live (~30 ticks a second). Pose landmarks → people is shared with Live edge (`web/lib/tier1/people.ts`).
-- **Gate opens:** the whole clip goes to Gemini as usual, plus the Tier-1 hints (already clip-relative), hand close-ups
-  from the original video at the reach and the possible hide, and `tier1_screen: "flagged"`. The incident shows
-  "Screened by Tier-1".
-- **Gate stays shut:** Gemini is not called and no incident is created. A card shows what Tier-1 saw (person in view,
-  weaker signals, highest score vs the gate) with **Send to Gemini anyway**, which sends the clip with those signals as
-  hints and `tier1_screen: "cleared"`.
-- If the clip can't be scanned (no readable length, models fail to load), Gemini checks it directly and a note says so.
-  The screening state is part of the cache key, so "send anyway" is never answered from a screened run's cache.
+- **Scan on the device** (`web/lib/tier1/scanClip.ts`, `screen.ts`, `measure.ts`): the clip is stepped through every
+  100 ms of clip time with MediaPipe pose, the same person tracker, rule engines and auto-tuned gate as Live edge,
+  using only the zones actually placed on the clip (the scan refuses to run without a shelf zone, or scanner + bagging
+  zones at a checkout). Each pose sample is ticked three times, so "hot frames" mean what they mean live.
+- **Body-relative geometry:** reach, basket and hand-at-body distances are measured in torso lengths (the shopper's
+  upright shoulder-to-hip length), not frame units, so a distant shopper's reach counts the same as a near one's.
+- **What it shows:** whether the gate would have sent the clip (and when it opened), the gate's signals, and neutral
+  **measurements** of the main shopper's hands: shelf contacts, a hand resting on the body after a shelf visit
+  (pocket height, waistband, torso centre, out at the side) and, at a checkout, **hand trips from the item pile to
+  the bagging area** and whether each went through the scanner zone, next to the receipt's line count.
+- **Send to Gemini with measurements:** the measurements go in the prompt as times and places only ("moments to look
+  at; trust the video"), never as conclusions, with numbered hand close-ups at those moments (`hand_1…4`, or
+  `trip_1…6` at each trip's arrival in the bagging area). The gate's signal names never go to Gemini.
+  **Send without them** runs the same clip as a plain Gemini investigation, for comparison. Either way the incident
+  records the gate's decision (`tier1_screen: flagged | cleared`).
+- **Tier-1 safety rule** (`api/app/tier1.py`): Gemini can't clear a clip the measurements say needs a look. BENIGN
+  becomes INCONCLUSIVE (Needs review) when a checkout clip has more measured trips than receipt lines, or a hand rested
+  on the body for 1.2 s or more right after a shelf visit.
+- Live edge's "put back" hint is no longer sent to Gemini: a wrong one only argues against a real theft.
 
 ## Built feedback loops
 

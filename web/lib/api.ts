@@ -14,6 +14,7 @@ import type {
   ReceiptLine,
   Rule,
   RuleSpec,
+  Tier1Measure,
   RosterPerson,
   Store,
   TokenUsage,
@@ -210,6 +211,8 @@ export interface MarkedStill {
     | "bagging_end"
     | "hand_reach"
     | "hand_hold"
+    | `hand_${1 | 2 | 3 | 4}`
+    | `trip_${1 | 2 | 3 | 4 | 5 | 6}`
     | "scanner_ref";
   blob: Blob;
 }
@@ -232,6 +235,8 @@ export interface InvestigateMeta {
   inventory_usage?: TokenUsage;
   /** Set when Investigate screened the clip with Tier-1 first ("cleared" = sent anyway). */
   tier1_screen?: "flagged" | "cleared";
+  /** Investigate's Tier-1 hand measurements, when staff send the clip with them. */
+  tier1_measure?: Tier1Measure;
   tier1_events?: {
     t: string;
     kind: string;

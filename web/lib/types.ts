@@ -23,6 +23,51 @@ export interface Camera {
   zone_ids: string[];
 }
 
+export type Hand = "left" | "right";
+export type BodySpot = "pocket" | "bag" | "shirt" | "waistband";
+
+/** Investigate's Tier-1 measurements: times (clip seconds) and places only, no conclusions. */
+export interface ShelfContact {
+  hand: Hand;
+  start_s: number;
+  end_s: number;
+}
+
+export interface BodyHold {
+  hand: Hand;
+  start_s: number;
+  end_s: number;
+  /** Where the wrist rested; geometry only (a phone pocketed and a stolen item look the same here). */
+  spot: BodySpot;
+  /** When that hand last left the shelf before this hold. */
+  after_shelf_s: number;
+}
+
+export interface Trip {
+  /** Last time a hand was in the item pile before this trip, and when it reached the bagging area. */
+  start_s: number;
+  end_s: number;
+  via_scanner: boolean;
+}
+
+export interface CloseUpRef {
+  label: string;
+  t_s: number;
+  moment: "shelf_exit" | "hold" | "bagging";
+}
+
+export interface Tier1Measure {
+  gate_opened: boolean;
+  opened_at_s?: number | null;
+  peak_score: number;
+  person_seen: number;
+  shelf_contacts: ShelfContact[];
+  holds: BodyHold[];
+  /** Null when trips can't be counted (not a checkout, or pile / scanner / bagging zone not marked). */
+  trips: Trip[] | null;
+  close_ups: CloseUpRef[];
+}
+
 export interface CameraPrefs {
   camera_id: string;
   person: boolean;
@@ -196,6 +241,7 @@ export interface Incident {
   edge_confidence?: number | null;
   /** Investigate's on-device Tier-1 screening: its gate opened, or it cleared the clip and staff sent it anyway. */
   tier1_screen?: "flagged" | "cleared" | null;
+  tier1_measure?: Tier1Measure | null;
   usage?: TokenUsage | null;
   inventory_usage?: TokenUsage | null;
   memory_used?: MemoryRef[];

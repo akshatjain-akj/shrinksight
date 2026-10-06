@@ -30,7 +30,8 @@ export default function InvestigatePage() {
   const { store, error: storeError } = useStore();
   const { data: rules } = useRules();
   const [cameraId, setCameraId] = useState("cam-sco-1");
-  // Optional Tier-1 screening (off by default, remembered on this browser): Gemini runs only if the gate opens.
+  // Optional Tier-1 screening (off by default, remembered on this browser). It scans on this device and shows what it
+  // decided and measured; staff then send the clip to Gemini with or without the measurements.
   const [screenOn, setScreenOn] = useState(false);
   const [screened, setScreened] = useState<ScanResult | null>(null);
   const [screenNote, setScreenNote] = useState<string | null>(null);
@@ -170,8 +171,65 @@ export default function InvestigatePage() {
   const receiptReady = !isCheckout || receiptChoice !== CUSTOM || customLines.length > 0;
   const canRun = Boolean(camera && clip && consent && receiptReady && !running);
 
-  /** sendAnyway: Tier-1 already cleared this clip and staff want Gemini to check it regardless. */
-  const run = async ({ sendAnyway = false }: { sendAnyway?: boolean } = {}) => {
+  const receiptLines = !isCheckout
+    ? null
+    : receiptChoice === CUSTOM
+      ? customLines.length
+      : (transactions.find((t) => t.id === receiptChoice)?.lines.length ?? null);
+
+  /** Tier-1 on this device only: shows what the gate decided and what it measured. Gemini is not called. */
+  const screen = async () => {
+    if (!camera || !clipUrl) return;
+    setScreened(null);
+    setScreenNote(null);
+    setError(null);
+    // Only zones that were really placed: preset boxes sit wherever the preset puts them, not on this store's shelf.
+    const placed = zoneState ? markedShapes(zoneState) : [];
+    const has = (kind: string) => placed.some((zone) => zone.kind === kind);
+    const missing = isCheckout
+      ? ["scanner", "bagging"].filter((kind) => !has(kind))
+      : has("shelf") ? [] : ["shelf"];
+    if (missing.length) {
+      setScreenNote(
+        `Tier-1 needs the ${missing.join(" and ")} zone${missing.length > 1 ? "s" : ""} placed on this clip (drag, suggest or load the saved layout) before it can screen it.`,
+      );
+      return;
+    }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setRunning(true);
+    const relabel = (label: string) => setSteps((prev) => [...prev.slice(0, -1), { label, done: false }]);
+    setSteps([{ label: "Tier-1 screening on this device · 0%", done: false }]);
+    try {
+      const scan = await scanClip(clipUrl, {
+        cameraKind: camera.kind,
+        zones: placed,
+        rules: rules ?? [],
+        tuning: gate,
+        signal: controller.signal,
+        onProgress: (f) => relabel(`Tier-1 screening on this device · ${Math.round(f * 100)}%`),
+      });
+      const first = scan.hits[0];
+      relabel(
+        scan.flagged
+          ? `Tier-1 gate opened at ${stamp(scan.openedAtMs ?? 0)}${first ? ` (${hitText(first)})` : ""}`
+          : "Tier-1 gate stayed shut",
+      );
+      setSteps((prev) => prev.map((step) => ({ ...step, done: true })));
+      setScreened(scan);
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") {
+        setSteps([]);
+        setScreenNote(`Tier-1 couldn’t screen this clip (${(e as Error).message}). Untick it to send the clip to Gemini directly.`);
+      }
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  /** tier1: the screening result and whether its measurements and close-ups go with the clip. */
+  const run = async ({ tier1 }: { tier1?: { scan: ScanResult; withMeasurements: boolean } } = {}) => {
     if (!camera || !clip) return;
     const zonesToSend = zoneState?.send ? markedShapes(zoneState) : [];
     const sendZones = zonesToSend.length > 0;
@@ -196,50 +254,21 @@ export default function InvestigatePage() {
       setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label, done: false }]);
     const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
 
-    // 0. Optional Tier-1 screening on this device. If its gate stays shut, Gemini is not called at all.
-    let handStills: MarkedStill[] = [];
-    let screenedNow = false;
-    setScreenNote(null);
-    const withHints = (scan: ScanResult, verdict: "flagged" | "cleared") => {
-      meta.tier1_screen = verdict;
-      meta.tier1_events = scan.hits.map((hit) => ({ ...hit, camera_id: camera.id }));
-      handStills = scan.hands;
-    };
-    if (screenOn && sendAnyway && screened) {
-      withHints(screened, "cleared");
-      setScreened(null);
-    } else if (screenOn && clipUrl) {
-      setScreened(null);
-      screenedNow = true;
-      setSteps([{ label: "Tier-1 screening on this device · 0%", done: false }]);
-      try {
-        const scan = await scanClip(clipUrl, {
-          cameraKind: camera.kind,
-          zones: zoneState?.shapes ?? [],
-          rules: rules ?? [],
-          tuning: gate,
-          signal: controller.signal,
-          onProgress: (f) => relabel(`Tier-1 screening on this device · ${Math.round(f * 100)}%`),
-        });
-        if (!scan.flagged) {
-          relabel("Tier-1 cleared the clip · Gemini not needed");
-          setSteps((prev) => prev.map((step) => ({ ...step, done: true })));
-          setScreened(scan);
-          setRunning(false);
-          return;
-        }
-        const first = scan.hits[0];
-        relabel(
-          `Tier-1 flagged the clip at ${stamp(scan.openedAtMs ?? 0)}${first ? ` (${hitText(first)})` : scan.reason ? ` (${scan.reason})` : ""}`,
-        );
-        withHints(scan, "flagged");
-      } catch (e) {
-        if ((e as Error).name === "AbortError") {
-          setRunning(false);
-          return;
-        }
-        relabel("Tier-1 screening skipped");
-        setScreenNote(`Tier-1 couldn’t screen this clip (${(e as Error).message}), so Gemini checks it directly.`);
+    // 0. Tier-1's result rides along: the gate's decision always, the measurements and close-ups if chosen. The
+    // gate's own signal names ("put back", "possible hide") are conclusions, so they never go to Gemini.
+    const handStills: MarkedStill[] = [];
+    if (tier1) {
+      const { scan, withMeasurements } = tier1;
+      meta.tier1_screen = scan.flagged ? "flagged" : "cleared";
+      if (withMeasurements) {
+        meta.tier1_measure = {
+          gate_opened: scan.flagged,
+          opened_at_s: scan.openedAtMs == null ? null : Math.round(scan.openedAtMs / 100) / 10,
+          peak_score: scan.peakScore,
+          ...scan.measured,
+          close_ups: scan.closeUps.map(({ label, t_s, moment }) => ({ label, t_s, moment })),
+        };
+        for (const shot of scan.closeUps) handStills.push({ label: shot.label as MarkedStill["label"], blob: shot.blob });
       }
     }
 
@@ -264,9 +293,7 @@ export default function InvestigatePage() {
     }
 
     // 2. Stills (from the full-resolution original) and the upload-size optimisation run side by side.
-    const stillsLabel = sendZones ? "Preparing stills with the marked zones" : "Preparing stills";
-    if (screenedNow) advance(stillsLabel);
-    else setSteps([{ label: stillsLabel, done: false }]);
+    setSteps([{ label: sendZones ? "Preparing stills with the marked zones" : "Preparing stills", done: false }]);
     // Crop the uploaded video to the marked zones (+30% margin) and draw the zone outlines into it.
     const crop = actionCrop(zonesToSend);
     const [baseStills, shrunk] = await Promise.all([
@@ -514,8 +541,8 @@ export default function InvestigatePage() {
                 style={{ marginTop: 4 }}
               />
               <span className="small">
-                <strong>Screen with Tier-1 first</strong> (on this device, free). Gemini only runs if this camera’s Tier-1
-                gate opens, as on Live edge.
+                <strong>Screen with Tier-1 first</strong> (on this device, free). Shows what this camera’s Tier-1 gate
+                decides and measures; you then choose to send the clip to Gemini.
               </span>
             </label>
             <label className="row" style={{ alignItems: "flex-start", fontWeight: 400 }}>
@@ -525,15 +552,26 @@ export default function InvestigatePage() {
                 stored; only the report is kept.
               </span>
             </label>
-            <button type="button" className="btn btn-primary" disabled={!canRun} onClick={() => run()}>
-              {running ? "Investigating…" : screenOn ? "Screen with Tier-1, then Gemini" : "Investigate with Gemini"}
+            <button
+              type="button"
+              className={screened ? "btn" : "btn btn-primary"}
+              disabled={!canRun}
+              onClick={() => (screenOn ? screen() : run())}
+            >
+              {running ? "Working…" : screenOn ? (screened ? "Run Tier-1 again" : "Run Tier-1 on this device") : "Investigate with Gemini"}
             </button>
             {!clip && <span className="hint">Add a clip to start.</span>}
             {clip && !receiptReady && <span className="hint">Add at least one scanned item.</span>}
             {clip && receiptReady && !consent && <span className="hint">Tick the consent box to continue.</span>}
             {steps.length > 0 && <ProgressSteps steps={steps} running={running} />}
             {screened && !running && (
-              <Tier1ScreenCard result={screened} gate={gate} canSend={canRun} onSendAnyway={() => run({ sendAnyway: true })} />
+              <Tier1ScreenCard
+                result={screened}
+                gate={gate}
+                receiptLines={receiptLines}
+                canSend={canRun}
+                onSend={(withMeasurements) => run({ tier1: { scan: screened, withMeasurements } })}
+              />
             )}
             {screenNote && <p className="hint" style={{ margin: 0 }}>{screenNote}</p>}
             <InventoryConfirm state={inventory} onChange={setInventory} />

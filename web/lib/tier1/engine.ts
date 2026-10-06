@@ -57,7 +57,7 @@ export interface EdgeTuning {
 
 export const DEFAULT_TUNING: EdgeTuning = { sendScore: 0.4, hotFrames: 8, holdExtraMs: 0 };
 
-type HideSpot = "pocket" | "bag" | "shirt" | "waistband";
+export type HideSpot = "pocket" | "bag" | "shirt" | "waistband";
 
 const HIDE_DETAIL: Record<HideSpot, string> = {
   pocket: "Item went from a reach into a jacket pocket",
@@ -70,6 +70,113 @@ const COOLDOWN_MS = 20_000;
 function nearest(point: Pt, points: Pt[]): Pt | null {
   if (!points.length) return null;
   return points.reduce((best, candidate) => (dist(candidate, point) < dist(best, point) ? candidate : best));
+}
+
+/**
+ * Distances below are tuned on a shopper whose shoulder-to-hip length is at least REF_TORSO of the frame. A smaller
+ * (more distant) shopper scales them down, so a reach or a hand at the hip means the same at any distance.
+ */
+export const REF_TORSO = 0.4;
+
+/** Shoulder-to-hip length in frame units, or null when a shoulder or a hip is missing. */
+export function torsoLength(sample: BodySample): number | null {
+  const mid = (points: (Pt | null | undefined)[]): Pt | null => {
+    const seen = points.filter((p): p is Pt => Boolean(p));
+    if (!seen.length) return null;
+    return { x: seen.reduce((sum, p) => sum + p.x, 0) / seen.length, y: seen.reduce((sum, p) => sum + p.y, 0) / seen.length };
+  };
+  const shoulder = mid([sample.leftShoulder, sample.rightShoulder]);
+  const hip = mid([sample.leftHip, sample.rightHip]);
+  return shoulder && hip ? dist(shoulder, hip) : null;
+}
+
+/**
+ * One person's upright body size: the longest recent torso, fading slowly (about 10 s). Bending over a shelf shortens
+ * the torso on camera, and that must not shrink every threshold.
+ */
+export class BodyScale {
+  private torso: number | null = null;
+  private lastT: number | null = null;
+
+  update(sample: BodySample): void {
+    const length = torsoLength(sample);
+    if (length == null) return;
+    const faded = this.torso == null || this.lastT == null ? 0 : this.torso * Math.exp(-Math.max(0, sample.tMs - this.lastT) / 10_000);
+    this.torso = Math.max(length, faded);
+    this.lastT = sample.tMs;
+  }
+
+  /** 1 for a near shopper; smaller for a distant one (never below 0.2). */
+  get unit(): number {
+    return this.torso == null ? 1 : Math.min(1, Math.max(0.2, this.torso / REF_TORSO));
+  }
+}
+
+/** Wrist on the shelf and stretched out (away from the hip, or above the shoulder). */
+export function onShelf(wrist: Pt, sample: BodySample, shelf: ZoneShape[], unit = 1): boolean {
+  if (!shelf.length || !inAny(wrist, shelf)) return false;
+  const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
+  const hip = nearest(wrist, hips);
+  const away = hip ? dist(wrist, hip) > 0.2 * unit : false;
+  const shoulder = sample.leftShoulder ?? sample.rightShoulder;
+  const lifted = shoulder ? wrist.y < shoulder.y - 0.02 * unit : false;
+  return away || lifted;
+}
+
+/** A hand back in front of the body, not in clothing. That is a basket, not a hide. */
+export function atBasket(sample: BodySample, unit = 1): boolean {
+  const wrists = [sample.leftWrist, sample.rightWrist].filter((p): p is Pt => Boolean(p));
+  const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
+  return wrists.some((wrist) => {
+    const hip = nearest(wrist, hips);
+    if (!hip) return false;
+    const gap = dist(wrist, hip);
+    return gap > 0.16 * unit && gap < 0.24 * unit && Math.abs(wrist.y - hip.y) < 0.1 * unit;
+  });
+}
+
+/** Where on the body a wrist is resting: pocket, bag (out at the side), shirt, waistband, or nowhere. */
+export function handSpot(
+  wrist: Pt,
+  sample: BodySample,
+  shelf: ZoneShape[],
+  unit = 1,
+  allowed: (spot: HideSpot) => boolean = () => true,
+): HideSpot | null {
+  const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
+  const shoulders = [sample.leftShoulder, sample.rightShoulder].filter((p): p is Pt => Boolean(p));
+  const shoulder = shoulders[0];
+  const midX = shoulders.length ? shoulders.reduce((sum, point) => sum + point.x, 0) / shoulders.length : hips[0]?.x;
+  const hip = nearest(wrist, hips);
+  if (!hip) return null;
+  const dx = Math.abs(wrist.x - hip.x);
+  const gap = dist(wrist, hip);
+  const u = unit;
+  if (allowed("waistband") && wrist.y > hip.y + 0.05 * u && dx < 0.12 * u) return "waistband";
+  if (
+    allowed("shirt") &&
+    shoulder &&
+    midX !== undefined &&
+    Math.abs(wrist.x - midX) < 0.08 * u &&
+    wrist.y > shoulder.y + 0.05 * u &&
+    wrist.y < hip.y - 0.12 * u
+  ) {
+    return "shirt";
+  }
+  if (allowed("pocket") && dx < 0.12 * u && wrist.y > hip.y - 0.16 * u && wrist.y <= hip.y + 0.04 * u) return "pocket";
+  if (allowed("pocket") && gap < 0.16 * u) return "pocket";
+  if (
+    allowed("bag") &&
+    shoulder &&
+    !inAny(wrist, shelf) &&
+    gap > 0.22 * u &&
+    gap < 0.48 * u &&
+    wrist.y >= shoulder.y &&
+    wrist.y <= hip.y + 0.1 * u
+  ) {
+    return "bag";
+  }
+  return null;
 }
 
 export function stamp(ms: number): string {
@@ -111,8 +218,9 @@ export class Tier1Engine {
   private handLeftShelf = false;
   /** Only the wrist that actually entered the shelf can be a hide. A hanging arm is not. */
   private reachedSide = { left: false, right: false };
-  /** Show the put-back line until this time. A returned item is not a hide. */
-  private putBackUntil = 0;
+  /** Show the put-back line until this time. A returned item is not a hide. Starts in the past: clip time starts at 0. */
+  private putBackUntil = Number.NEGATIVE_INFINITY;
+  private readonly scale = new BodyScale();
   /** When the torso first went flat on the floor. A bend toward a shelf does not start this. */
   private downSince: number | null = null;
   private dwellMs: Record<string, number> = {};
@@ -158,6 +266,7 @@ export class Tier1Engine {
 
     this.poseTrail.push(sample);
     this.poseTrail = this.poseTrail.filter((s) => sample.tMs - s.tMs <= 2000);
+    if (sample.present) this.scale.update(sample);
 
     const wrists = [sample.leftWrist, sample.rightWrist].filter((p): p is Pt => Boolean(p));
     const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
@@ -355,45 +464,21 @@ export class Tier1Engine {
   private reaching(sample: BodySample, shelf: ZoneShape[]): boolean {
     if (!shelf.length) return false;
     const smooth = this.withSmoothedWrists(sample);
-    const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
-    const shoulder = sample.leftShoulder ?? sample.rightShoulder;
     const hands: Array<[Pt | null | undefined, Pt | null | undefined]> = [
       [sample.leftWrist, smooth.leftWrist],
       [sample.rightWrist, smooth.rightWrist],
     ];
-    return hands.some(([raw, wrist]) => {
-      if (!raw || !wrist || !inAny(raw, shelf) || !inAny(wrist, shelf)) return false;
-      const extended = (point: Pt) => {
-        const hip = nearest(point, hips);
-        const away = hip ? dist(point, hip) > 0.2 : false;
-        const lifted = shoulder ? point.y < shoulder.y - 0.02 : false;
-        return away || lifted;
-      };
-      return extended(raw) && extended(wrist);
-    });
+    const unit = this.scale.unit;
+    return hands.some(([raw, wrist]) => Boolean(raw && wrist && onShelf(raw, sample, shelf, unit) && onShelf(wrist, sample, shelf, unit)));
   }
 
-  /** A hand back in front of the body, not in clothing. That is a basket, not a hide. */
   private basket(sample: BodySample): boolean {
-    const wrists = [sample.leftWrist, sample.rightWrist].filter((p): p is Pt => Boolean(p));
-    const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
-    return wrists.some((wrist) => {
-      const hip = nearest(wrist, hips);
-      if (!hip) return false;
-      const gap = dist(wrist, hip);
-      return gap > 0.16 && gap < 0.24 && Math.abs(wrist.y - hip.y) < 0.1;
-    });
+    return atBasket(sample, this.scale.unit);
   }
 
   /** Raw wrist on the shelf and stretched out. Smoothing is not required, so a put-back counts immediately. */
   private rawOnShelf(wrist: Pt, sample: BodySample, shelf: ZoneShape[]): boolean {
-    if (!shelf.length || !inAny(wrist, shelf)) return false;
-    const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
-    const hip = nearest(wrist, hips);
-    const away = hip ? dist(wrist, hip) > 0.2 : false;
-    const shoulder = sample.leftShoulder ?? sample.rightShoulder;
-    const lifted = shoulder ? wrist.y < shoulder.y - 0.02 : false;
-    return away || lifted;
+    return onShelf(wrist, sample, shelf, this.scale.unit);
   }
 
   /** Where a hand settled after a reach. Pocket, bag, shirt, and waistband are separate rules. */
@@ -402,33 +487,9 @@ export class Tier1Engine {
       this.reachedSide.left ? sample.leftWrist : null,
       this.reachedSide.right ? sample.rightWrist : null,
     ].filter((p): p is Pt => Boolean(p));
-    const hips = [sample.leftHip, sample.rightHip].filter((p): p is Pt => Boolean(p));
-    const shoulders = [sample.leftShoulder, sample.rightShoulder].filter((p): p is Pt => Boolean(p));
-    const shoulder = shoulders[0];
-    const midX = shoulders.length
-      ? shoulders.reduce((sum, point) => sum + point.x, 0) / shoulders.length
-      : hips[0]?.x;
     for (const wrist of wrists) {
-      const hip = nearest(wrist, hips);
-      if (!hip) continue;
-      const dx = Math.abs(wrist.x - hip.x);
-      const gap = dist(wrist, hip);
-      if (this.hideAllowed("waistband") && wrist.y > hip.y + 0.05 && dx < 0.12) return "waistband";
-      if (
-        this.hideAllowed("shirt") &&
-        shoulder &&
-        midX !== undefined &&
-        Math.abs(wrist.x - midX) < 0.08 &&
-        wrist.y > shoulder.y + 0.05 &&
-        wrist.y < hip.y - 0.12
-      ) {
-        return "shirt";
-      }
-      if (this.hideAllowed("pocket") && dx < 0.12 && wrist.y > hip.y - 0.16 && wrist.y <= hip.y + 0.04) return "pocket";
-      if (this.hideAllowed("pocket") && gap < 0.16) return "pocket";
-      if (this.hideAllowed("bag") && shoulder && !inAny(wrist, shelf) && gap > 0.22 && gap < 0.48 && wrist.y >= shoulder.y && wrist.y <= hip.y + 0.1) {
-        return "bag";
-      }
+      const spot = handSpot(wrist, sample, shelf, this.scale.unit, (item) => this.hideAllowed(item));
+      if (spot) return spot;
     }
     return null;
   }

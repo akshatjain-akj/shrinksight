@@ -251,13 +251,18 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               {incident.origin === "edge" && <span className="chip">Sent by the live edge</span>}
               {incident.tier1_screen === "flagged" && (
                 <span className="chip" title="The on-device Tier-1 check screened this clip first and its gate opened">
-                  Screened by Tier-1 · flagged
-                  {incident.edge_confidence != null ? ` ${Math.round(incident.edge_confidence * 100)}%` : ""}
+                  Tier-1 gate: would send
+                  {incident.edge_confidence != null ? ` · ${Math.round(incident.edge_confidence * 100)}%` : ""}
                 </span>
               )}
               {incident.tier1_screen === "cleared" && (
-                <span className="chip" title="Tier-1 saw nothing that opens the gate; staff asked Gemini to check anyway">
-                  Sent anyway · Tier-1 had cleared it
+                <span className="chip" title="Tier-1's gate stayed shut on this clip; staff sent it to Gemini">
+                  Tier-1 gate: would not have sent
+                </span>
+              )}
+              {incident.tier1_measure && (
+                <span className="chip" title="Tier-1's hand measurements and close-ups went to Gemini as moments to look at">
+                  Tier-1 measurements used
                 </span>
               )}
             </div>

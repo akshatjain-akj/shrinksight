@@ -37,6 +37,53 @@ IncidentOrigin = Literal["edge", "upload"]
 # Investigate's optional on-device Tier-1 screening: "flagged" = its gate opened; "cleared" = it didn't and staff
 # sent the clip anyway.
 Tier1Screen = Literal["flagged", "cleared"]
+HandSide = Literal["left", "right"]
+BodySpot = Literal["pocket", "bag", "shirt", "waistband"]
+_CLIP_S = {"ge": 0, "le": 600}
+
+
+class ShelfContact(BaseModel):
+    hand: HandSide
+    start_s: float = Field(**_CLIP_S)
+    end_s: float = Field(**_CLIP_S)
+
+
+class BodyHold(BaseModel):
+    """A wrist resting on the body soon after that hand left the shelf. Geometry only."""
+
+    hand: HandSide
+    start_s: float = Field(**_CLIP_S)
+    end_s: float = Field(**_CLIP_S)
+    spot: BodySpot
+    after_shelf_s: float = Field(**_CLIP_S)
+
+
+class HandTrip(BaseModel):
+    """A hand going from the item pile to the bagging area, and whether it passed through the scanner zone."""
+
+    start_s: float = Field(**_CLIP_S)
+    end_s: float = Field(**_CLIP_S)
+    via_scanner: bool
+
+
+class CloseUpRef(BaseModel):
+    label: str = Field(pattern=r"^(hand_[1-4]|trip_[1-6])$")
+    t_s: float = Field(**_CLIP_S)
+    moment: Literal["shelf_exit", "hold", "bagging"]
+
+
+class Tier1Measure(BaseModel):
+    """Investigate's on-device Tier-1 scan of an upload: its gate's decision and what the shopper's hands did."""
+
+    gate_opened: bool
+    opened_at_s: float | None = Field(default=None, **_CLIP_S)
+    peak_score: float = Field(ge=0, le=1)
+    person_seen: float = Field(ge=0, le=1)
+    shelf_contacts: list[ShelfContact] = Field(default_factory=list, max_length=12)
+    holds: list[BodyHold] = Field(default_factory=list, max_length=8)
+    # None when trips couldn't be counted (not a checkout, or the item pile / scanner / bagging zone isn't marked)
+    trips: list[HandTrip] | None = Field(default=None, max_length=20)
+    close_ups: list[CloseUpRef] = Field(default_factory=list, max_length=6)
 
 POSITIVE_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -240,6 +287,8 @@ class Incident(BaseModel):
     edge_confidence: float | None = None
     # Set when Investigate screened the upload with Tier-1 first
     tier1_screen: Tier1Screen | None = None
+    # Investigate's Tier-1 measurements, when they were sent with the clip
+    tier1_measure: Tier1Measure | None = None
     usage: TokenUsage | None = None
     inventory_usage: TokenUsage | None = None
     memory_used: list[MemoryRef] = []

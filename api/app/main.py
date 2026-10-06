@@ -17,7 +17,7 @@ from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
 from .inventory import take_inventory
-from .investigator import investigate, normalise_mime
+from .investigator import TIER1_CLOSE_UPS, investigate, normalise_mime
 from .memory import feedback_from
 from .models import (
     POSITIVE_VERDICTS,
@@ -30,6 +30,7 @@ from .models import (
     ReceiptLine,
     Rule,
     RuleSpec,
+    Tier1Measure,
     Tier1Screen,
     TokenUsage,
     Transaction,
@@ -740,6 +741,8 @@ class InvestigateMeta(BaseModel):
     inventory_usage: TokenUsage | None = None
     # Investigate's on-device Tier-1 screening result, when it ran ("cleared" = sent anyway)
     tier1_screen: Tier1Screen | None = None
+    # Investigate's Tier-1 hand measurements, when staff sent the clip with them
+    tier1_measure: Tier1Measure | None = None
 
 
 def enforce_app_check(request: Request) -> None:
@@ -763,7 +766,7 @@ def _parse_meta(header: str | None) -> InvestigateMeta:
 # Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked), then the Live edge's
 # hand close-ups at the reach and the possible hide, then the optional reference photo of the scanning device.
 STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end", "hand_reach",
-                "hand_hold", "scanner_ref")
+                "hand_hold", *TIER1_CLOSE_UPS, "scanner_ref")
 MAX_STILLS = len(STILL_LABELS)
 STILL_LIMIT = 400_000  # the high-detail item-pile close-up can be up to ~1024 px wide
 
@@ -874,6 +877,8 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             scanner_photo, photo_source = saved_photo[0], "saved"
     memory = await asyncio.to_thread(repo.feedback, camera.id) if cfg().memory_examples > 0 else []
     edge_confidence = max((e.confidence for e in meta.tier1_events if e.confidence is not None), default=None)
+    if edge_confidence is None and meta.tier1_measure is not None:
+        edge_confidence = meta.tier1_measure.peak_score
 
     def events():
         for event in investigate(
@@ -891,6 +896,7 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             edge_confidence=edge_confidence,
             inventory_usage=meta.inventory_usage,
             tier1_screen=meta.tier1_screen,
+            tier1_measure=meta.tier1_measure,
         ):
             if event["type"] == "result" and meta.origin == "edge" and not event.get("cached"):
                 _retune(repo, camera.id)
