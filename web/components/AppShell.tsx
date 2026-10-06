@@ -1,0 +1,48 @@
+"use client";
+
+import type { ReactNode } from "react";
+import { useEffect, useSyncExternalStore } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import NavBar from "@/components/NavBar";
+import { emptySession, readSession, subscribeSession } from "@/lib/session";
+
+const OPEN = new Set(["/", "/login", "/about"]);
+
+export default function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const bare = pathname === "/login";
+  // Subscribed so an expired or cleared session (401, logout in another tab) redirects at once.
+  const session = useSyncExternalStore(subscribeSession, readSession, emptySession);
+
+  useEffect(() => {
+    if (OPEN.has(pathname)) return;
+    const current = readSession();
+    if (!current) {
+      router.replace("/login");
+      return;
+    }
+    const managerPage = pathname.startsWith("/rules") || pathname.startsWith("/settings");
+    if (managerPage && current.role !== "manager") router.replace("/monitor");
+  }, [pathname, router, session]);
+
+  if (bare) {
+    return (
+      <main id="main" className="page page-bare">
+        {children}
+      </main>
+    );
+  }
+
+  return (
+    <>
+      <NavBar />
+      <main id="main" className="page">
+        {children}
+      </main>
+      <footer className="footer">
+        ShrinkSight · Google Cloud AI Builder Cup 2026 · Retail &amp; Commerce · All store data is synthetic.
+      </footer>
+    </>
+  );
+}

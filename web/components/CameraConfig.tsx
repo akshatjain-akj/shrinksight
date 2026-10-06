@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ErrorNotice, Skeletons } from "@/components/ui";
+import { api } from "@/lib/api";
 import {
   DEFAULT_DETECTION,
   loadCameraConfigs,
@@ -21,7 +22,7 @@ function clamp(n: number): number {
 }
 
 export default function CameraConfig({ initialCameraId }: { initialCameraId?: string | null }) {
-  const { store, error } = useStore();
+  const { store, error, reload } = useStore();
   const cameras = store?.cameras ?? [];
   const [cameraId, setCameraId] = useState<string | null>(initialCameraId ?? null);
   const [zoneId, setZoneId] = useState<string | null>(null);
@@ -34,6 +35,11 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
   // Zones that are really placed: saved before, or dragged here. Placeholder presets are never saved.
   const [touched, setTouched] = useState<string[]>([]);
   const [synced, setSynced] = useState(0);
+  const [camName, setCamName] = useState("");
+  const [camKind, setCamKind] = useState<"checkout" | "floor">("checkout");
+  const [laneId, setLaneId] = useState("");
+  const [busy, setBusy] = useState<"add" | "delete" | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
   const camera = cameras.find((item) => item.id === cameraId) ?? cameras[0];
@@ -105,32 +111,123 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     }
   };
 
+  const addCamera = async () => {
+    setFormError(null);
+    setBusy("add");
+    try {
+      const created = await api.createCamera({
+        name: camName.trim(),
+        kind: camKind,
+        ...(camKind === "checkout" ? { lane_id: laneId.trim() } : {}),
+      });
+      setCamName("");
+      setLaneId("");
+      setCameraId(created.camera.id);
+      reload();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Could not add the camera");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeCamera = async () => {
+    if (!camera) return;
+    if (!window.confirm(`Delete ${camera.name}? Its zones go away. Past incidents stay.`)) return;
+    setFormError(null);
+    setBusy("delete");
+    try {
+      await api.deleteCamera(camera.id);
+      setCameraId(null);
+      reload();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Could not delete the camera");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (error) return <ErrorNotice>Couldn’t load the store: {error}</ErrorNotice>;
   if (!store) return <Skeletons count={2} />;
-  if (!camera || !zone) return null;
 
   return (
     <section className="settings-card" aria-label="Camera configuration">
       <header className="settings-card-head">
         <h2>Camera configuration</h2>
-        <span className="muted small">{camera.name}</span>
+        <span className="muted small">{camera ? camera.name : "No camera yet"}</span>
       </header>
-      <div className="settings-body">
-        <div className="settings-stage-wrap">
+      <div className="settings-layout">
+        <aside className="camera-rail" aria-label="Cameras">
+          <h3>Cameras</h3>
           <div className="settings-cameras" role="tablist" aria-label="Cameras">
             {cameras.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 role="tab"
-                aria-selected={item.id === camera.id}
-                className={item.id === camera.id ? "is-on" : ""}
+                aria-selected={camera?.id === item.id}
+                className={camera?.id === item.id ? "is-on" : ""}
                 onClick={() => setCameraId(item.id)}
               >
-                {item.name}
+                <span>{item.name}</span>
+                <small>{item.kind === "checkout" ? item.lane_id ?? "Checkout" : "Floor"}</small>
               </button>
             ))}
           </div>
+          {camera && (
+            <button type="button" className="btn btn-danger" disabled={busy !== null} onClick={() => void removeCamera()}>
+              {busy === "delete" ? "Deleting…" : "Delete this camera"}
+            </button>
+          )}
+          <form
+            className="camera-add"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void addCamera();
+            }}
+          >
+            <h3>Add a camera</h3>
+            <label className="field">
+              Name
+              <input
+                type="text"
+                value={camName}
+                onChange={(event) => setCamName(event.target.value)}
+                required
+                minLength={2}
+                maxLength={80}
+                placeholder="Lane 3"
+              />
+            </label>
+            <label className="field">
+              Kind
+              <select value={camKind} onChange={(event) => setCamKind(event.target.value as "checkout" | "floor")}>
+                <option value="checkout">Checkout</option>
+                <option value="floor">Floor</option>
+              </select>
+            </label>
+            {camKind === "checkout" && (
+              <label className="field">
+                Lane
+                <input
+                  type="text"
+                  value={laneId}
+                  onChange={(event) => setLaneId(event.target.value)}
+                  required
+                  maxLength={10}
+                  placeholder="L3"
+                />
+              </label>
+            )}
+            <button type="submit" className="btn btn-primary" disabled={busy !== null}>
+              {busy === "add" ? "Adding…" : "Add camera"}
+            </button>
+          </form>
+          {formError && <ErrorNotice>{formError}</ErrorNotice>}
+        </aside>
+        {camera && zone ? (
+      <div className="settings-body">
+        <div className="settings-stage-wrap">
           <div className="settings-stage" ref={stageRef}>
             {clipUrl ? (
               <video className="settings-video" src={clipUrl} muted autoPlay loop playsInline crossOrigin="anonymous" />
@@ -264,6 +361,10 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
           {saved && <p className="hint">Saved for everyone using this camera.</p>}
           {saveError && <ErrorNotice>{saveError}</ErrorNotice>}
         </aside>
+      </div>
+        ) : (
+          <p className="settings-empty">Add a camera, then mark its zones.</p>
+        )}
       </div>
     </section>
   );

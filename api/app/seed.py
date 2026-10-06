@@ -4,6 +4,8 @@ Bump SEED_VERSION whenever this file changes so deployed instances re-seed Fires
 Seeded documents use fixed ids, so re-seeding never duplicates and never touches live incidents.
 """
 
+from typing import Literal
+
 from .models import (
     Camera,
     Feedback,
@@ -17,11 +19,15 @@ from .models import (
     ToolCallLog,
     Transaction,
     UnscannedItem,
+    UserAccount,
     VerdictOut,
     Zone,
 )
+from .profiles import hash_password
 
-SEED_VERSION = "2026-10-06.floor"
+SEED_VERSION = "2026-10-06.manager-role"
+# Shared demo password for the seeded roster. Stored only as a per-user hash.
+SEED_PASSWORD = "ShrinkSight26"
 STORE_NAME = "Demo Mart (synthetic)"
 
 CAMERAS = [
@@ -227,6 +233,25 @@ FEEDBACK = [
     Feedback(incident_id="inc-seed-005", camera_id="cam-sco-1", decision="confirm", reason="missed_scan",
              verdict="SCAN_AVOIDANCE", summary=INCIDENTS[4].verdict.reason,
              items=["small blister pack under cereal box"], reviewed_at="2026-10-03T06:30:00Z"),
+]
+
+def _user(doc_id: str, email: str, name: str, role: Literal["manager", "user"]) -> UserAccount:
+    salt = f"shrinksight-{doc_id}"
+    return UserAccount(
+        id=doc_id,
+        email=email,
+        name=name,
+        role=role,
+        password_salt=salt,
+        password_hash=hash_password(SEED_PASSWORD, salt),
+        created_at="2026-10-06T08:00:00Z",
+    )
+
+
+USERS = [
+    _user("user-akshat", "akshat.gms@gmail.com", "Akshat", "manager"),
+    _user("user-avni", "avni.rocks17@gmail.com", "Avni", "manager"),
+    _user("user-skcorinva", "skcorinva@gmail.com", "User", "user"),
 ]
 
 RULES = [

@@ -355,6 +355,19 @@ class RuleSpec(BaseModel):
     summary: str = Field(description="The rule restated in one short plain-English sentence")
 
 
+class UserAccount(BaseModel):
+    """One person on the store roster. The password is a hash; the browser never reads this collection."""
+
+    id: str
+    email: str
+    name: str
+    role: Literal["manager", "user"]
+    password_salt: str
+    password_hash: str
+    enabled: bool = True
+    created_at: str
+
+
 class Rule(BaseModel):
     id: str
     source_text: str

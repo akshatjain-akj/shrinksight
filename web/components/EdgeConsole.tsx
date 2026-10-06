@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { armAlertSound, playAlertChime } from "@/lib/alertSound";
 import { ApiError, investigateStream } from "@/lib/api";
 import { toTuning, useEdgeConfig, useRules, useStore } from "@/lib/hooks";
 import type { Tier1Hit } from "@/lib/tier1/engine.ts";
@@ -214,6 +215,10 @@ export default function EdgeConsole() {
   const { config: edgeConfig, setConfig: setEdgeConfig } = useEdgeConfig(camera?.id);
   const tuningRef = useRef(toTuning(null));
   const gate = toTuning(edgeConfig);
+
+  useEffect(() => {
+    armAlertSound();
+  }, []);
 
   useEffect(() => {
     tuningRef.current = toTuning(edgeConfig);
@@ -618,6 +623,7 @@ export default function EdgeConsole() {
           if (event.type === "result") {
             holdScoreRef.current = false;
             const verdict: VerdictKind = event.incident.verdict.verdict;
+            if (!event.cached && event.incident.status === "NEEDS_REVIEW") playAlertChime();
             updateSend(logId, {
               status: "done",
               verdict,

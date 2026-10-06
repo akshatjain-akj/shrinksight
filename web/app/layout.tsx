@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import NavBar from "@/components/NavBar";
+import AppShell from "@/components/AppShell";
 import Warmup from "@/components/Warmup";
 import "./globals.css";
 
@@ -18,13 +18,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Skip to content
         </a>
         <Warmup />
-        <NavBar />
-        <main id="main" className="page">
-          {children}
-        </main>
-        <footer className="footer">
-          ShrinkSight · Google Cloud AI Builder Cup 2026 · Retail &amp; Commerce · All store data is synthetic.
-        </footer>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

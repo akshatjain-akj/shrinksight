@@ -75,6 +75,7 @@ export function useRules() {
 export function useStore() {
   const [store, setStore] = useState<Store | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     api
       .store()
@@ -83,8 +84,8 @@ export function useStore() {
         void syncLayoutsFromServer();
       })
       .catch((err: Error) => setError(err.message));
-  }, []);
-  return { store, error };
+  }, [tick]);
+  return { store, error, reload: () => setTick((n) => n + 1) };
 }
 
 export function toTuning(config: EdgeConfig | null): EdgeTuning {
