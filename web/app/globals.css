@@ -579,37 +579,6 @@ button.chip[aria-pressed="true"] {
 .playback-stage .live-scan-hud {
   bottom: 2.4rem;
 }
-.clip-box {
-  position: absolute;
-  z-index: 2;
-  border: 2px solid #f87171;
-  border-radius: 3px;
-  pointer-events: none;
-}
-.clip-box.scanned {
-  border-color: #34d399;
-}
-.clip-box span,
-.clip-verdict {
-  position: absolute;
-  left: 0;
-  top: -1.35rem;
-  max-width: 16rem;
-  padding: 0.1rem 0.35rem;
-  background: rgb(7 13 24 / 0.88);
-  color: #fff;
-  font-size: 0.68rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.clip-box.scanned span {
-  color: #34d399;
-}
-.clip-verdict {
-  top: 2.4rem;
-  left: 0.45rem;
-}
 .camera-checkout {
   background:
     linear-gradient(180deg, rgb(7 13 24 / 0.15), rgb(7 13 24 / 0.55)),
@@ -798,6 +767,19 @@ button.chip[aria-pressed="true"] {
   border-radius: 4px;
   box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.25);
   pointer-events: none;
+}
+.bbox.other {
+  border: 1px solid rgb(226 232 240 / 0.75);
+  box-shadow: none;
+}
+.bbox.other span {
+  top: -1.25rem;
+  background: rgb(7 13 24 / 0.85);
+  color: #e2e8f0;
+  font-weight: 500;
+}
+.mark-note {
+  margin: 0.35rem 0 0;
 }
 .bbox span {
   position: absolute;
@@ -2243,4 +2225,28 @@ table.compare {
 }
 .token-log {
   font-variant-numeric: tabular-nums;
+}
+.send-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.send-log li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.send-log li:last-child {
+  border-bottom: 0;
+}
+.send-reason {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }

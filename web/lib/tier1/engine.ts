@@ -24,6 +24,8 @@ export interface Tier1Hit {
   confidence?: number;
   box?: [number, number, number, number];
   camera_id?: string;
+  /** When it happened, in ms since the watch started (converted to clip time before sending). */
+  atMs?: number;
 }
 
 export interface TickResult {
@@ -70,7 +72,7 @@ function nearest(point: Pt, points: Pt[]): Pt | null {
   return points.reduce((best, candidate) => (dist(candidate, point) < dist(best, point) ? candidate : best));
 }
 
-function stamp(ms: number): string {
+export function stamp(ms: number): string {
   const s = Math.max(0, ms) / 1000;
   const m = Math.floor(s / 60);
   const rem = s - m * 60;
@@ -293,6 +295,7 @@ export class Tier1Engine {
       ...hit,
       ...(shouldSend ? { trigger: hit.kind === "LANE_CLEAR" ? "lane_leave" as const : trigger } : {}),
       confidence,
+      atMs: sample.tMs,
       ...(sample.box ? { box: sample.box } : {}),
     }));
 

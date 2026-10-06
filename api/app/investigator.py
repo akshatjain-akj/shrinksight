@@ -43,7 +43,14 @@ from .models import (
     ZoneHint,
     status_for,
 )
-from .reconcile import apply_receipt_rule, confirmed_list_text, receipt_lines_text, reconcile
+from .reconcile import (
+    apply_floor_rule,
+    apply_receipt_rule,
+    confirmed_list_text,
+    floor_problems,
+    receipt_lines_text,
+    reconcile,
+)
 from .repo import Repo, match_sku
 from .zones import from_crop, zones_context
 
@@ -52,8 +59,8 @@ BACKUP_MIN_SECONDS = 20
 RECHECK_MIN_SECONDS = 15
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-05.memory-scanner-ref"
-CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end"}
+PROMPT_VERSION = "2026-10-06.item-moment"
+CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end", "hand_reach", "hand_hold"}
 
 ALLOWED_MIME = {"video/mp4": "video/mp4", "video/webm": "video/webm", "video/quicktime": "video/mov",
                 "video/mov": "video/mov", "video/3gpp": "video/3gpp"}
@@ -72,6 +79,8 @@ STILL_TEXT = {
     "pickup_start": "Close-up: the item pile at the start (count every item here)",
     "scanner_mid": "Close-up: the scanner zone mid-clip",
     "bagging_end": "Close-up: the bagging area at the end (what ended up in the bag)",
+    "hand_reach": "Close-up: the hands when the on-device check saw a reach",
+    "hand_hold": "Close-up: the hands when the on-device check saw a possible hide",
 }
 
 SYSTEM_PROMPT = """You are a retail loss-prevention investigator reviewing a short CCTV clip.
@@ -101,9 +110,10 @@ Method for a self-checkout (receipt first):
 2. Follow every item, in order, with its clip timestamp. Match each one to the till receipt line it corresponds
    to by what it looks like (each line matches at most one item). An item is unscanned ONLY if no receipt line
    matches it. The receipt is the truth about what was scanned.
-3. For each item record where it FINISHED (ended_in): bag, hand_or_pocket (kept by the shopper), pile (never
-   moved), put_back, or unclear. Also note its path relative to the scanner zone (location); "never_near_scanner"
-   means the item moved to the bag or the shopper WITHOUT passing the scanner, not that it stayed still.
+3. For each item record where it FINISHED (ended_in): bag, in_hand (kept by the shopper, visibly), concealed
+   (pocket, clothing or a personal bag), pile (never moved), put_back, or unclear. Also note its path relative
+   to the scanner zone (location); "never_near_scanner" means the item moved to the bag or the shopper WITHOUT
+   passing the scanner, not that it stayed still.
    The scanner may be a real scanner or a marked area (paper, tape, a box); use the marked zones when given.
 4. Chain of custody: for each item give picked_up_at, scanner_at (null if it never reached the scanner) and
    ended_at, as clip timestamps. Base every conclusion on these observed moments.
@@ -119,12 +129,24 @@ Benign look-alikes (not theft): sliding a phone into a back pocket; rotating an 
 a failed read; pulling stuck plastic bags apart at the bagging area; reading a label near a pocket and putting the
 item back; putting down a personal bag brought into the store.
 
-Method for the shop floor: watch where picked-up items go, using the zone policy provided.
+Method for the shop floor (zone policy provided):
+1. List every item the person handled in seen_items, including small, thin or flat ones; they are easy to miss, so
+   watch the hands closely and use the hand close-ups. scanned is always false on the shop floor.
+2. came_from: shelf (the shelf zone, or any surface or object in or under it, such as a chair, box or ledge),
+   own_clothing_or_bag (it came out of the person's own pocket, clothing or bag first), or unclear.
+3. ended_in: in_hand (still visibly held or carried), concealed (put into a pocket, clothing, a sleeve, the
+   waistband or a personal bag, even briefly or partly), put_back, or unclear. Give picked_up_at and ended_at.
+4. A store item (came_from shelf) that ended concealed is CONCEALMENT, however small the item and however quick the
+   movement. Carrying an item openly in the hand, or putting it into a store basket or cart, is BENIGN, unless the
+   person crosses a marked exit zone with it (RULE_BREACH: left with an unpaid item).
+5. An object that came out of the person's own clothing or bag and went back there is a personal item: BENIGN.
 - A person lying flat on the floor is a health hazard, not a theft. Use RULE_BREACH and say they are down.
   Bending or reaching toward a shelf is not a fall.
 
 Format: timestamps are relative to the clip start, mm:ss.s. Bounding boxes use [ymin, xmin, ymax, xmax]
-normalised to 0-1000. Stills, when attached, come first: time-ordered stills, then close-ups at higher detail.
+normalised to 0-1000. For each seen item, t is the moment it is most clearly visible in the hand (for an item that
+gets hidden, just before it is hidden), and box_2d is drawn tightly around the item itself at exactly that moment.
+Stills, when attached, come first: time-ordered stills, then close-ups at higher detail.
 Labelled outlines mark the zones (ITEMS in pink, SCANNER in amber, BAGGING in blue); a red rectangle marks the
 person when present. Judge the stills and the video together.
 """
@@ -135,7 +157,8 @@ confirmed item list is given, you may leave inventory empty: set inventory_id on
 Leave starting_items empty.
 seen_items: every item you saw handled. For each: receipt_line = the number of the receipt line it matches (each
 line used at most once), or null if no line matches; scanned = true exactly when receipt_line is set; location =
-its path relative to the scanner zone; ended_in = where it finished (bag, hand_or_pocket, pile, put_back, unclear).
+its path relative to the scanner zone; ended_in = where it finished (bag, in_hand, concealed, pile, put_back,
+unclear); came_from = where it was first picked up.
 items_seen and items_scanned must match seen_items.
 reason: one or two plain sentences, actions only."""
 
@@ -232,7 +255,8 @@ def _context_text(
     if not tier1_events:
         return text
     hints = "\n".join(_hint_line(e) for e in tier1_events[:12])
-    return text + "\n\nOn-device Tier-1 hints (verify on the clip; they are not proof):\n" + hints
+    header = "On-device Tier-1 hints (times are from the start of this clip; verify on the clip, they are not proof):"
+    return f"{text}\n\n{header}\n{hints}"
 
 
 def _hint_line(event: dict) -> str:
@@ -502,6 +526,8 @@ def investigate(
         timings["watch_ms"] = _ms(step)
         usage = add_usage({}, result.usage)
         first, hard, soft, json_error = _parse(result.text, receipt, confirmed)
+        if first is not None and camera.kind == "floor":
+            soft = soft + floor_problems(first)
         chosen, chosen_hard = (first, hard) if first is not None else (None, [])
 
         # ---- 4. One re-check, only if the answer doesn't add up and there's time ----
@@ -511,7 +537,8 @@ def investigate(
             yield _progress("recheck", "Double-checking against the till receipt" if receipt else "Double-checking")
             problem = (
                 f"That JSON was invalid: {json_error}\nReturn corrected JSON only." if json_error else
-                "Your answer doesn't add up against the till receipt and the item list:\n- " + "\n- ".join(hard + soft)
+                ("Your answer doesn't add up against the till receipt and the item list:\n- " if receipt else
+                 "Your answer doesn't add up:\n- ") + "\n- ".join(hard + soft)
                 + "\nWatch again and return corrected JSON only."
             )
             follow_up = contents_for(plain)
@@ -548,6 +575,8 @@ def investigate(
         receipt_note, overridden = None, False
         if camera.kind == "checkout" and receipt:
             verdict, receipt_note, overridden = apply_receipt_rule(verdict, receipt)
+        elif camera.kind == "floor":
+            verdict, receipt_note, overridden = apply_floor_rule(verdict)
 
         # ---- 6. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
@@ -589,6 +618,13 @@ def _receipt_lines(transaction: Transaction | None, tool_results: list[dict]) ->
     return [ReceiptLine(name=line["name"], price_inr=line["price_inr"]) for line in result.get("lines", [])]
 
 
+def _floor_loss(item, verdict_kind: str) -> bool:
+    """On the shop floor an item openly in the hand is not a loss, unless it was carried past the exit (RULE_BREACH)."""
+    if item.ended_in == "in_hand":
+        return verdict_kind == "RULE_BREACH"
+    return item.ended_in in ("concealed", "unclear")
+
+
 def _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started) -> Incident:
     receipt_result = next((t["result"] for t in tool_results if t["tool"] == "get_pos_transaction"), None)
     receipt_txn = transaction
@@ -598,8 +634,10 @@ def _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbo
     unscanned: list[UnscannedItem] = []
     if verdict.verdict in POSITIVE_VERDICTS:
         for item in verdict.seen_items:
-            if item.scanned or item.ended_in in LEFT_BEHIND:
-                continue  # paid for, or never left the pile: not a loss
+            if item.scanned or item.ended_in in LEFT_BEHIND or item.came_from == "own_clothing_or_bag":
+                continue  # paid for, never left the pile, or the person's own: not a loss
+            if camera.kind == "floor" and not _floor_loss(item, verdict.verdict):
+                continue
             sku = match_sku(item.description, toolbox._catalogue())
             unscanned.append(UnscannedItem(t=item.t, description=item.description,
                                            price_inr=sku.price_inr if sku else None,

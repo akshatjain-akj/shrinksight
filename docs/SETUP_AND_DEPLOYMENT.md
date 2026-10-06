@@ -443,3 +443,17 @@ CI runs a smoke test on production (`/api/healthz` + one cached investigation). 
   but weakens server-side security and the Cloud Run story. Not recommended.
 - `[UNVERIFIED]` If organisers hand out Google Cloud credit coupons, they go on the same billing account. Some need an
   upgraded account, so check the fine print and **don't upgrade just to claim credits** without discussing it first.
+
+## Clearing test data
+Playback, Monitor and the incident pages all read the same Firestore incidents. To remove your test runs but keep the
+demo (seed) data:
+```bash
+cd api
+gcloud auth application-default login           # once, with the project owner account
+uv run python scripts/clear_test_data.py        # dry run: shows what would be deleted
+uv run python scripts/clear_test_data.py --yes  # deletes it
+```
+It deletes live incidents, receipts typed on Investigate, the cache pointers to investigations, manager feedback on
+live incidents and every camera's auto-tuned edge gate. It never touches `inc-seed-*`, `TXN-L1-*`/`TXN-L2-*` or seed
+feedback.
+

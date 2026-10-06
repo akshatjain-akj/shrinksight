@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { clipSeconds, dateTime, inr } from "@/lib/format";
+import { flaggedItem, visibleMarks } from "@/lib/marks";
 import type { ConfirmReason, DismissReason, Incident, SeenItem, TokenUsage } from "@/lib/types";
 import AskPanel from "./AskPanel";
 import { ErrorNotice, StatusPill, VerdictBadge } from "./ui";
@@ -61,8 +62,17 @@ const LOCATION_TEXT: Record<string, string> = {
   never_near_scanner: "never near the scanner",
 };
 
+const CAME_FROM_TEXT: Record<string, string> = {
+  shelf: "from the shelf area",
+  pile: "from the item pile",
+  counter: "from the counter",
+  own_clothing_or_bag: "the person's own item",
+};
+
 const ENDED_TEXT: Record<string, string> = {
   bag: "ended in the bag",
+  in_hand: "still in their hand",
+  concealed: "concealed (pocket, clothing or bag)",
   hand_or_pocket: "kept by the shopper",
   pile: "stayed in the pile",
   put_back: "was put back",
@@ -101,7 +111,10 @@ function Evidence({ incident, videoUrl, focus, videoRef }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
   const [aspect, setAspect] = useState(16 / 9);
-  const box = focus?.box_2d?.length === 4 ? focus.box_2d : null;
+  // Where the video is (seconds); boxes are drawn only around their item's moment. Null without a video.
+  const [playhead, setPlayhead] = useState<number | null>(videoUrl ? 0 : null);
+  const marks = visibleMarks(incident.verdict.seen_items, focus, videoUrl ? playhead : null);
+  const hasBoxes = incident.verdict.seen_items.some((item) => item.box_2d?.length === 4);
   const note = videoUrl
     ? null
     : incident.source === "seed"
@@ -109,36 +122,51 @@ function Evidence({ incident, videoUrl, focus, videoRef }: {
       : "Clips aren’t stored. ShrinkSight analyses them and keeps only the report (privacy by design).";
 
   return (
-    <div className={`evidence${videoUrl ? "" : " evidence-placeholder"}`} style={videoUrl ? { aspectRatio: aspect } : undefined}>
-      {videoUrl && (
-        <video
-          ref={videoRef}
-          src={videoUrl}
-          controls
-          playsInline
-          muted
-          onLoadedMetadata={(e) => {
-            const v = e.currentTarget;
-            if (v.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight);
-          }}
-        />
+    <div>
+      <div className={`evidence${videoUrl ? "" : " evidence-placeholder"}`} style={videoUrl ? { aspectRatio: aspect } : undefined}>
+        {videoUrl && (
+          <video
+            ref={videoRef}
+            src={videoUrl}
+            controls
+            playsInline
+            muted
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              if (v.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight);
+              // Open paused on the flagged item's moment, where its box belongs.
+              if (focus?.box_2d?.length === 4) v.currentTime = Math.min(clipSeconds(focus.t), v.duration || Infinity);
+            }}
+            onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)}
+            onSeeked={(e) => setPlayhead(e.currentTarget.currentTime)}
+          />
+        )}
+        {marks.map((item) => {
+          const [ymin, xmin, ymax, xmax] = item.box_2d;
+          return (
+            <div
+              key={`${item.t}-${item.description}`}
+              className={`bbox${item === focus ? "" : " other"}`}
+              style={{
+                top: `${ymin / 10}%`,
+                left: `${xmin / 10}%`,
+                height: `${(ymax - ymin) / 10}%`,
+                width: `${(xmax - xmin) / 10}%`,
+              }}
+            >
+              <span>
+                {item.description} · {item.t}
+              </span>
+            </div>
+          );
+        })}
+        {note && <p className="evidence-note">{note}</p>}
+      </div>
+      {videoUrl && hasBoxes && (
+        <p className="muted small mark-note">
+          Boxes are Gemini’s approximate position, shown around each item’s moment. Click an item to jump to it.
+        </p>
       )}
-      {box && (
-        <div
-          className="bbox"
-          style={{
-            top: `${box[0] / 10}%`,
-            left: `${box[1] / 10}%`,
-            height: `${(box[2] - box[0]) / 10}%`,
-            width: `${(box[3] - box[1]) / 10}%`,
-          }}
-        >
-          <span>
-            {focus!.description} · {focus!.t}
-          </span>
-        </div>
-      )}
-      {note && <p className="evidence-note">{note}</p>}
     </div>
   );
 }
@@ -147,7 +175,7 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
   const { verdict } = incident;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [focus, setFocus] = useState<SeenItem | null>(
-    () => verdict.seen_items.find((s) => !s.scanned && s.box_2d.length === 4) ?? null,
+    () => flaggedItem(verdict.seen_items),
   );
   const [current, setCurrent] = useState(incident);
   const [reviewing, setReviewing] = useState(false);
@@ -374,6 +402,33 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                   </tr>
                 </tbody>
               </table>
+            </section>
+          )}
+
+          {!isCheckout && verdict.seen_items.length > 0 && (
+            <section className="card" aria-labelledby="handled-title">
+              <h2 id="handled-title">What the person handled</h2>
+              <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {verdict.seen_items.map((item, i) => (
+                  <li key={i}>
+                    <button type="button" className="linkish" onClick={() => seek(item.t, item)}>
+                      {item.description}
+                    </button>{" "}
+                    <span className="time">{item.t}</span>
+                    <span className="seen-meta">
+                      {[
+                        item.came_from && item.came_from !== "unclear" ? CAME_FROM_TEXT[item.came_from] : null,
+                        item.picked_up_at ? `picked up ${item.picked_up_at}` : null,
+                        item.ended_in && item.ended_in !== "unclear"
+                          ? `${ENDED_TEXT[item.ended_in]}${item.ended_at ? ` ${item.ended_at}` : ""}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" → ") || "path unclear"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
 

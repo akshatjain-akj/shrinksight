@@ -13,9 +13,12 @@ RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BY
 ConcealmentOf = Literal["pocket", "bag", "shirt", "waistband"]
 ItemLocation = Literal["over_scanner", "beside_scanner", "hidden_under_item", "never_near_scanner", "unclear"]
 # Where an item finished up. This, not the scanner path, decides whether an unscanned item is a loss.
-EndedIn = Literal["bag", "hand_or_pocket", "pile", "put_back", "unclear"]
-TAKEN = {"bag", "hand_or_pocket"}
+# "in_hand" = still visibly held or carried; "concealed" = in a pocket, clothing, a sleeve or a personal bag.
+EndedIn = Literal["bag", "in_hand", "concealed", "pile", "put_back", "unclear"]
+TAKEN = {"bag", "in_hand", "concealed"}
 LEFT_BEHIND = {"pile", "put_back"}
+# Where an item came from. Decides store item vs personal item (an object out of the shopper's own pocket).
+CameFrom = Literal["shelf", "pile", "counter", "own_clothing_or_bag", "unclear"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 # Why a manager dismissed or confirmed an alert. The reason becomes the camera's memory, not just the decision.
 DismissReason = Literal["personal_item", "rescan", "bagging", "staff", "camera", "other"]
@@ -80,11 +83,16 @@ class Transaction(BaseModel):
 
 # ---------- Gemini investigation output (structured output schema) ----------
 class SeenItem(BaseModel):
-    t: str = Field(description="Clip-relative timestamp, e.g. '00:06.4'")
+    t: str = Field(
+        description="Clip-relative mm:ss.s of the moment the item is most clearly visible in the hand; for an item "
+        "that gets hidden, just before it is hidden. e.g. '00:06.4'"
+    )
     description: str = Field(description="Short visual description of the item, no brand guesses")
     scanned: bool = Field(description="True if the item matches a receipt line (it was rung up)")
     box_2d: list[int] = Field(
-        default_factory=list, description="[ymin, xmin, ymax, xmax] normalised 0-1000 at time t"
+        default_factory=list,
+        description="[ymin, xmin, ymax, xmax] normalised 0-1000, tightly around the item itself at exactly time t "
+        "(not the hand or person)",
     )
     receipt_line: int | None = Field(
         default=None, description="1-based number of the till receipt line this item matches, or null if none"
@@ -100,9 +108,22 @@ class SeenItem(BaseModel):
     ended_at: str | None = Field(default=None, description="When it reached where it finished (mm:ss.s), or null")
     ended_in: EndedIn = Field(
         default="unclear",
-        description="Where the item finished: bag, hand_or_pocket (kept by the shopper), pile (never moved), "
-        "put_back, or unclear",
+        description="Where the item finished: bag (shopping bag at the bagging area), in_hand (still visibly held or "
+        "carried), concealed (put into a pocket, clothing, a sleeve, the waistband or a personal bag), pile (never "
+        "moved), put_back, or unclear",
     )
+    came_from: CameFrom = Field(
+        default="unclear",
+        description="Where the item was first picked up: shelf (the shelf zone or any surface in or under it), pile "
+        "(the item pile at a checkout), counter, own_clothing_or_bag (it came out of the person's own pocket, "
+        "clothing or bag), or unclear",
+    )
+
+    @field_validator("ended_in", mode="before")
+    @classmethod
+    def _legacy_ended_in(cls, value):
+        # Older incidents used one value for both; "kept by the shopper" reads best as still in hand.
+        return "in_hand" if value == "hand_or_pocket" else value
 
 
 class InventoryItem(BaseModel):

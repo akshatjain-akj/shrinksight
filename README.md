@@ -47,7 +47,7 @@ flowchart LR
   cam[Webcam or file] --> edge[Browser MediaPipe]
   edge --> blur[Face blur on canvas]
   blur --> gate{Live camera?}
-  gate -->|score gate| clip[4s WebM]
+  gate -->|score gate| clip[Complete WebM: ~4-8 s before + 3.5 s after]
   gate -->|file ended, consent on| clip
   clip --> api[Cloud Run /api/investigate]
   api --> hit{Clip hash in cache?}

@@ -12,7 +12,7 @@ flowchart LR
   cam[Webcam or file] --> edge[Browser MediaPipe]
   edge --> blur[Face blur on canvas]
   blur --> gate{Live camera?}
-  gate -->|score gate| clip[4s WebM]
+  gate -->|score gate| clip[Complete WebM: ~4-8 s before + 3.5 s after]
   gate -->|file ended, consent on| clip
   clip --> api[Cloud Run /api/investigate]
   api --> hit{Clip hash in cache?}
@@ -82,6 +82,20 @@ erDiagram
     string incident_id
   }
 ```
+
+## Built Live edge clip and shop-floor check
+
+- **Always-playable clips** (`web/lib/tier1/clipBuffer.ts`): a WebM file only plays from its start, and the browser
+  writes keyframes rarely, so cutting old seconds out of one long recording gave Gemini undecodable video. Two
+  recorders now run staggered by 4 s and restart every 8 s. When the gate opens, the one with the most history is
+  claimed, records 3.5 s more and is sent whole: about 4–8 s before the trigger plus 3.5 s after (8 fps, 350 kbps).
+- **Clip-relative hints:** Tier-1 hint times are converted from "since the webcam started" to "since this clip started".
+- **Hand close-ups:** every 400 ms the hands are cropped from the face-blurred canvas; the shots nearest the reach and
+  the possible hide go to Gemini as `hand_reach` / `hand_hold` (medium detail).
+- **Shop-floor custody:** each item gets `came_from` (shelf, own clothing or bag, …) and `ended_in` (`in_hand` vs
+  `concealed`). A server rule (`apply_floor_rule`) never accepts BENIGN for a shelf item that ended concealed, the
+  floor counterpart of the receipt check. Carrying an item openly is BENIGN unless it crosses a marked exit zone.
+- **Send log** on Live edge: trigger, verdict, reason, incident link and a download of exactly what Gemini received.
 
 ## Built feedback loops
 
@@ -614,7 +628,9 @@ human-readable messages; quota errors return 429 with `retry_after`.
 
 **Prompt principles:** describe **actions only** (never appearance, clothing as identity, age, gender or ethnicity);
 say INCONCLUSIVE rather than guess; timestamps are relative to the clip start; bounding boxes use Gemini's native
-0–1000 `box_2d` format so the UI can overlay them directly.
+0–1000 `box_2d` format so the UI can overlay them directly. Each item's `t` and box are pinned to one moment (most
+clearly in the hand, or just before it is hidden); the evidence player opens paused there and draws each box only
+within 0.7 s of its moment (`web/lib/marks.ts`), labelled as Gemini's approximate position.
 
 **Model choice (set in config, confirmed on day 1):** Flash for investigations, Flash-Lite for rule compiling and as
 the fallback model.

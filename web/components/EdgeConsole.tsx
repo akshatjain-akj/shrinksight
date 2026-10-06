@@ -13,10 +13,12 @@ import { PersonTracker } from "@/lib/tier1/tracks.ts";
 import { Tier1Engine } from "@/lib/tier1/engine.ts";
 import { privacyBoxes } from "@/lib/tier1/privacy.ts";
 import { PoseSmoother } from "@/lib/tier1/oneEuro.ts";
-import { pickFour, type TimedStill } from "@/lib/tier1/stills.ts";
+import { handRect, pickFour, pickHands, toClipTime, type TimedStill } from "@/lib/tier1/stills.ts";
+import { canvasSegments, ClipBuffer, type Clip } from "@/lib/tier1/clipBuffer.ts";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision.ts";
-import type { Camera } from "@/lib/types";
+import type { Camera, VerdictKind } from "@/lib/types";
 import EdgeTuningBanner from "./EdgeTuningBanner";
+import EdgeSendLog, { type SendEntry } from "./EdgeSendLog";
 import { ErrorNotice, Skeletons } from "./ui";
 
 const W = 640;
@@ -38,6 +40,10 @@ interface Status {
   sending: boolean;
   paused: string | null;
   incidentId: string | null;
+  /** Recording the seconds after the trigger. */
+  recording: boolean;
+  /** Seconds until the gate can send again. */
+  cooldown: number;
 }
 
 const EMPTY: Status = {
@@ -52,7 +58,19 @@ const EMPTY: Status = {
   sending: false,
   paused: null,
   incidentId: null,
+  recording: false,
+  cooldown: 0,
 };
+
+// Same low-bandwidth video as before (enough for Gemini); what changed is that every clip is a complete file.
+const CLIP_FPS = 8;
+const CLIP_BITRATE = 350_000;
+/** Seconds recorded after the gate opens (the history before it comes from the clip buffer). */
+const POST_MS = 3500;
+const COOLDOWN_MS = 20_000;
+/** How long stills and hand close-ups are kept: the longest possible clip. */
+const SHOT_WINDOW_MS = 14_000;
+const HAND_SIDE = 256;
 
 function contain(srcW: number, srcH: number) {
   const scale = Math.min(W / srcW, H / srcH);
@@ -148,11 +166,6 @@ function withCamera(hits: Tier1Hit[], cameraId: string): Tier1Hit[] {
   return hits.map((hit) => ({ ...hit, camera_id: cameraId }));
 }
 
-function pickMime(): string {
-  const options = ["video/webm;codecs=vp8", "video/webm", "video/mp4"];
-  return options.find((m) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)) ?? "";
-}
-
 export default function EdgeConsole() {
   const params = useSearchParams();
   const { store, error: storeError } = useStore();
@@ -175,9 +188,12 @@ export default function EdgeConsole() {
   // Saved zones are burned into the blurred clip and stills, and sent as hints. Presets never are.
   const burnZonesRef = useRef<ZoneShape[]>([]);
   const zoneDescriptionsRef = useRef<Record<string, string>>({});
-  const headerRef = useRef<Blob | null>(null);
-  const clustersRef = useRef<Blob[]>([]);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const bufferRef = useRef<ClipBuffer | null>(null);
+  const handShotsRef = useRef<TimedStill[]>([]);
+  const cooldownUntilRef = useRef(0);
+  const [sends, setSends] = useState<SendEntry[]>([]);
+  const sendsRef = useRef<SendEntry[]>([]);
+  const nextSendRef = useRef(1);
   const streamRef = useRef<MediaStream | null>(null);
   const fileUrlRef = useRef<string | null>(null);
   const startedRef = useRef(0);
@@ -186,7 +202,7 @@ export default function EdgeConsole() {
   const handedOffRef = useRef(false);
   const holdScoreRef = useRef(false);
   const fromFileRef = useRef(false);
-  const pendingRef = useRef<{ hits: Tier1Hit[]; reason: string } | null>(null);
+  const pendingRef = useRef<{ hits: Tier1Hit[]; reason: string; clip?: Clip | null } | null>(null);
   const stopRef = useRef(false);
   const stillsRef = useRef<TimedStill[]>([]);
   const lastSnapRef = useRef(0);
@@ -277,7 +293,6 @@ export default function EdgeConsole() {
 
     let frame = 0;
     let raf = 0;
-    let tail = 0;
     let alive = true;
     let lastTick = performance.now();
     let lastVideoTime = -1;
@@ -305,7 +320,7 @@ export default function EdgeConsole() {
             sendingRef.current = true;
             const payload = { hits: [] as Tier1Hit[], reason: "Uploaded clip finished" };
             pendingRef.current = payload;
-            void flush(payload);
+            void flush(payload, null);
           }
         }
         return;
@@ -383,10 +398,28 @@ export default function EdgeConsole() {
           const tMs = now - startedRef.current;
           board.toBlob((blob) => {
             if (!blob) return;
-            const next = stillsRef.current.filter((shot) => tMs - shot.tMs <= 8000);
+            const next = stillsRef.current.filter((shot) => tMs - shot.tMs <= SHOT_WINDOW_MS);
             next.push({ tMs, blob });
             stillsRef.current = next;
           }, "image/jpeg", 0.72);
+          // A close-up of the hands, cropped from the blurred picture so a hand near the face stays blurred.
+          const hands = posePeople(lastPoses, 0)[0]?.sample;
+          const wrists = [hands?.leftWrist, hands?.rightWrist]
+            .filter((p): p is Pt => Boolean(p))
+            .map((p) => ({ x: fit.ox + p.x * srcW * fit.scale, y: fit.oy + p.y * srcH * fit.scale }));
+          const crop = handRect(wrists, W, H);
+          if (crop) {
+            const hand = document.createElement("canvas");
+            hand.width = HAND_SIDE;
+            hand.height = HAND_SIDE;
+            hand.getContext("2d")?.drawImage(blur, crop.x, crop.y, crop.w, crop.h, 0, 0, HAND_SIDE, HAND_SIDE);
+            hand.toBlob((blob) => {
+              if (!blob) return;
+              const kept = handShotsRef.current.filter((shot) => tMs - shot.tMs <= SHOT_WINDOW_MS);
+              kept.push({ tMs, blob });
+              handShotsRef.current = kept;
+            }, "image/jpeg", 0.8);
+          }
         }
       }
 
@@ -446,6 +479,7 @@ export default function EdgeConsole() {
           hotFrames: tick.hotFrames,
           dwell: tick.dwellSeconds,
           fps: fpsMarks.length,
+          cooldown: Math.max(0, Math.ceil((cooldownUntilRef.current - now) / 1000)),
           detail: tick.reason || (tick.smoothed >= tuningRef.current.sendScore ? "Score is high" : lastPoses.length ? "Watching" : "Waiting for a person"),
         }));
       } else if (frame % 8 === 0) {
@@ -455,16 +489,24 @@ export default function EdgeConsole() {
       if (liveGate && !sendingRef.current) {
         sendingRef.current = true;
         trackerRef.current.noteSent(now - startedRef.current, watched.activeId);
+        cooldownUntilRef.current = now + COOLDOWN_MS;
         const payload = { hits: withCamera(tick.hits, camera.id), reason: tick.reason };
-        tail = window.setTimeout(() => {
-          if (!alive) return;
-          pendingRef.current = payload;
-          void flush(payload);
-        }, 3000);
+        setStatus((s) => ({ ...s, recording: true, detail: "Gate opened · recording 3 s more" }));
+        // The buffer already holds the seconds before the trigger; it records POST_MS more and hands over one file.
+        const claimed = bufferRef.current?.claim(POST_MS) ?? Promise.resolve(null);
+        void claimed.then((clip) => {
+          setStatus((s) => ({ ...s, recording: false }));
+          if (!alive) {
+            sendingRef.current = false;
+            return;
+          }
+          pendingRef.current = { ...payload, clip };
+          void flush(payload, clip);
+        });
       }
     };
 
-    const flush = async (payload: { hits: Tier1Hit[]; reason: string }) => {
+    const flush = async (payload: { hits: Tier1Hit[]; reason: string }, clip: Clip | null) => {
       if (!alive) return;
       handedOffRef.current = true;
       if (!consentRef.current) {
@@ -475,80 +517,22 @@ export default function EdgeConsole() {
         setStatus((s) => ({ ...s, paused, detail: payload.reason }));
         return;
       }
-      setStatus((s) => ({ ...s, sending: true, paused: null, detail: "Recording a blurred clip for Gemini…" }));
-      const blob = await captureClip();
-      if (!blob || !camera) {
-        sendingRef.current = false;
-        setStatus((s) => ({ ...s, sending: false, paused: "The blurred clip was too short to send. Let the video play, then send again." }));
-        return;
-      }
-      setStatus((s) => ({ ...s, sending: true, paused: null, detail: payload.reason || "Gemini is reviewing the blurred clip" }));
-      try {
-        await investigateStream(
-          blob,
-          { camera_id: camera.id, tier1_events: payload.hits, origin: fromFileRef.current ? "upload" : "edge", ...zoneMeta() },
-          (event) => {
-            if (event.type === "result") {
-              holdScoreRef.current = false;
-              setStatus((s) => ({
-                ...s,
-                sending: false,
-                sent: s.sent + 1,
-                incidentId: event.incident.id,
-                detail: event.cached ? "Cached analysis" : "Gemini filed an incident",
-              }));
-            } else if (event.type === "error") {
-              holdScoreRef.current = false;
-              setStatus((s) => ({ ...s, sending: false, paused: event.message }));
-            }
-          },
-          undefined,
-          pickFour(stillsRef.current, phaseRef.current.reachAtMs, phaseRef.current.holdAtMs),
-        );
-      } catch (err) {
-        const paused = err instanceof ApiError && err.status === 429
-          ? "AI review paused. Today's free quota is used up. Tier 1 is still watching."
-          : (err as Error).message;
-        holdScoreRef.current = false;
-        setStatus((s) => ({ ...s, sending: false, paused }));
-      } finally {
-        sendingRef.current = false;
-      }
+      await send(payload, clip);
     };
 
     raf = requestAnimationFrame(loop);
     return () => {
       alive = false;
       stopRef.current = true;
-      clearTimeout(tail);
       cancelAnimationFrame(raf);
     };
   }, [camera, status.models]);
 
-  const startRecorder = (canvas: HTMLCanvasElement) => {
-    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
-    headerRef.current = null;
-    clustersRef.current = [];
-    const stream = canvas.captureStream(8);
-    const mime = pickMime();
-    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 350_000 } : undefined);
-    recorder.ondataavailable = (event) => {
-      if (!event.data.size) return;
-      // The first chunk holds the WebM header. Later chunks are clusters and can rotate.
-      if (!headerRef.current) headerRef.current = event.data;
-      else {
-        clustersRef.current.push(event.data);
-        if (clustersRef.current.length > 8) clustersRef.current.shift();
-      }
-    };
-    recorder.start(1000);
-    recorderRef.current = recorder;
-  };
-
-  const blobFromParts = (mime: string) => {
-    const header = headerRef.current;
-    const parts = header ? [header, ...clustersRef.current] : clustersRef.current;
-    return new Blob(parts, { type: mime });
+  const startBuffer = (canvas: HTMLCanvasElement) => {
+    bufferRef.current?.close();
+    const buffer = new ClipBuffer(canvasSegments(canvas, CLIP_FPS, CLIP_BITRATE));
+    buffer.begin();
+    bufferRef.current = buffer;
   };
 
   const isVideoBlob = async (blob: Blob) => {
@@ -559,52 +543,115 @@ export default function EdgeConsole() {
     return webm || mp4;
   };
 
-  const stopRecorder = (recorder: MediaRecorder) => new Promise<Blob>((resolve) => {
-    const mime = recorder.mimeType || "video/webm";
-    recorder.addEventListener("stop", () => resolve(blobFromParts(mime)), { once: true });
-    if (recorder.state === "recording") recorder.stop();
-    else resolve(new Blob([], { type: mime }));
-  });
-
-  /** Plays the source long enough to write one complete blurred file for Gemini. */
-  const captureClip = async (): Promise<Blob | null> => {
+  /** Uploaded files (and a fallback): play the last seconds again and record one fresh, complete file. */
+  const recordFresh = async (maxMs: number): Promise<Clip | null> => {
     const canvas = blurRef.current;
     const video = videoRef.current;
     if (!canvas || !video) return null;
     if (video.ended && Number.isFinite(video.duration) && video.duration > 1) {
-      video.currentTime = Math.max(0, video.duration - 5);
+      video.currentTime = Math.max(0, video.duration - maxMs / 1000);
     }
     await video.play().catch(() => undefined);
-
-    const rolling = recorderRef.current;
-    if (rolling?.state === "recording") {
-      const blob = await stopRecorder(rolling);
-      if (await isVideoBlob(blob)) {
-        startRecorder(canvas);
-        return blob;
-      }
-    }
-
-    headerRef.current = null;
-    clustersRef.current = [];
-    const mime = pickMime();
-    const recorder = new MediaRecorder(canvas.captureStream(8), mime ? { mimeType: mime, videoBitsPerSecond: 350_000 } : undefined);
-    recorder.ondataavailable = (event) => {
-      if (!event.data.size) return;
-      if (!headerRef.current) headerRef.current = event.data;
-      else clustersRef.current.push(event.data);
-    };
-    const fresh = new Promise<Blob>((resolve) => {
-      recorder.addEventListener("stop", () => resolve(blobFromParts(recorder.mimeType || mime || "video/webm")), { once: true });
-      recorder.start(250);
-      window.setTimeout(() => {
-        if (recorder.state === "recording") recorder.stop();
-      }, 4000);
+    const segment = canvasSegments(canvas, CLIP_FPS, CLIP_BITRATE)();
+    const startMs = performance.now();
+    await new Promise<void>((resolve) => {
+      video.addEventListener("ended", () => resolve(), { once: true });
+      window.setTimeout(resolve, maxMs);
     });
-    recorderRef.current = recorder;
-    const blob = await fresh;
-    startRecorder(canvas);
-    return (await isVideoBlob(blob)) ? blob : null;
+    const blob = await segment.stop();
+    return (await isVideoBlob(blob)) ? { blob, startMs, endMs: performance.now() } : null;
+  };
+
+  const logSend = (entry: Omit<SendEntry, "id">): number => {
+    const id = nextSendRef.current++;
+    const next = [{ ...entry, id }, ...sendsRef.current];
+    for (const dropped of next.slice(6)) if (dropped.clipUrl) URL.revokeObjectURL(dropped.clipUrl);
+    sendsRef.current = next.slice(0, 6);
+    setSends(sendsRef.current);
+    return id;
+  };
+
+  const updateSend = (id: number, patch: Partial<SendEntry>) => {
+    sendsRef.current = sendsRef.current.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
+    setSends(sendsRef.current);
+  };
+
+  useEffect(() => () => sendsRef.current.forEach((entry) => entry.clipUrl && URL.revokeObjectURL(entry.clipUrl)), []);
+
+  /**
+   * Sends one clip to Gemini: hints moved to clip time, stills and hand close-ups from inside the clip, and an entry
+   * in the send log with a download link to exactly what was sent.
+   */
+  const send = async (payload: { hits: Tier1Hit[]; reason: string }, given: Clip | null | undefined) => {
+    sendingRef.current = true;
+    setStatus((s) => ({ ...s, sending: true, paused: null, detail: "Preparing the blurred clip…" }));
+    const buffered = given && (await isVideoBlob(given.blob)) ? given : null;
+    const clip = buffered ?? (await recordFresh(fromFileRef.current ? 8000 : 4000));
+    if (!clip || !camera) {
+      sendingRef.current = false;
+      setStatus((s) => ({ ...s, sending: false, paused: "The blurred clip was too short to send. Let the video play, then send again." }));
+      return;
+    }
+    const clipStart = clip.startMs - startedRef.current;
+    const clipEnd = clip.endMs - startedRef.current;
+    const within = (shots: TimedStill[]) => shots.filter((shot) => shot.tMs >= clipStart - 200 && shot.tMs <= clipEnd);
+    const { reachAtMs, holdAtMs } = phaseRef.current;
+    const frames = within(stillsRef.current);
+    const stills = [
+      ...pickFour(frames.length ? frames : stillsRef.current, reachAtMs, holdAtMs),
+      ...pickHands(within(handShotsRef.current), reachAtMs, holdAtMs),
+    ];
+    const hits = toClipTime(payload.hits, clipStart);
+    const logId = logSend({
+      at: new Date().toLocaleTimeString(),
+      trigger: payload.reason || "Gate opened",
+      seconds: Math.round((clip.endMs - clip.startMs) / 100) / 10,
+      status: "reviewing",
+      clipUrl: URL.createObjectURL(clip.blob),
+    });
+    setStatus((s) => ({ ...s, detail: "Gemini is reviewing the blurred clip" }));
+    try {
+      await investigateStream(
+        clip.blob,
+        { camera_id: camera.id, tier1_events: hits, origin: fromFileRef.current ? "upload" : "edge", ...zoneMeta() },
+        (event) => {
+          if (event.type === "result") {
+            holdScoreRef.current = false;
+            const verdict: VerdictKind = event.incident.verdict.verdict;
+            updateSend(logId, {
+              status: "done",
+              verdict,
+              reason: event.incident.verdict.reason,
+              incidentId: event.incident.id,
+              cached: event.cached,
+            });
+            setStatus((s) => ({
+              ...s,
+              sending: false,
+              sent: s.sent + 1,
+              incidentId: event.incident.id,
+              paused: null,
+              detail: event.cached ? "Cached analysis" : "Gemini filed an incident",
+            }));
+          } else if (event.type === "error") {
+            holdScoreRef.current = false;
+            updateSend(logId, { status: "error", reason: event.message });
+            setStatus((s) => ({ ...s, sending: false, paused: event.message }));
+          }
+        },
+        undefined,
+        stills,
+      );
+    } catch (err) {
+      const paused = err instanceof ApiError && err.status === 429
+        ? "AI review paused. Today's free quota is used up. Tier 1 is still watching."
+        : (err as Error).message;
+      holdScoreRef.current = false;
+      updateSend(logId, { status: "error", reason: paused });
+      setStatus((s) => ({ ...s, sending: false, paused }));
+    } finally {
+      sendingRef.current = false;
+    }
   };
 
   const stopInputs = () => {
@@ -612,8 +659,8 @@ export default function EdgeConsole() {
     streamRef.current = null;
     if (fileUrlRef.current) URL.revokeObjectURL(fileUrlRef.current);
     fileUrlRef.current = null;
-    recorderRef.current?.stop();
-    recorderRef.current = null;
+    bufferRef.current?.close();
+    bufferRef.current = null;
   };
 
   useEffect(() => () => stopInputs(), []);
@@ -633,13 +680,15 @@ export default function EdgeConsole() {
     }
     startedRef.current = performance.now();
     stillsRef.current = [];
+    handShotsRef.current = [];
+    cooldownUntilRef.current = 0;
     lastSnapRef.current = 0;
     phaseRef.current = { reachAtMs: null, holdAtMs: null };
     handedOffRef.current = false;
     holdScoreRef.current = false;
     setSourceLabel(label);
     setStatus((s) => ({ ...EMPTY, models: s.models, modelError: s.modelError }));
-    video.onloadeddata = () => startRecorder(blur);
+    video.onloadeddata = () => startBuffer(blur);
     void video.play().catch(() => undefined);
   };
 
@@ -657,47 +706,15 @@ export default function EdgeConsole() {
     attachVideo(URL.createObjectURL(file), file.name);
   };
 
+  /** After "tick consent": sends the clip that was held back (the real moment), or records a fresh one. */
   const sendHeld = async () => {
     const payload = pendingRef.current;
     if (!payload) return;
     setConsent(true);
     consentRef.current = true;
     handedOffRef.current = true;
-    sendingRef.current = true;
-    setStatus((s) => ({ ...s, sending: true, paused: null, detail: "Recording a blurred clip for Gemini…" }));
-    const blob = await captureClip();
-    if (!blob) {
-      setStatus((s) => ({ ...s, sending: false, paused: "The blurred clip was too short to send. Let the video play, then send again." }));
-      sendingRef.current = false;
-      return;
-    }
-    setStatus((s) => ({ ...s, detail: "Gemini is reviewing the blurred clip" }));
-    void investigateStream(
-      blob,
-      {
-        camera_id: camera?.id ?? cameraId,
-        tier1_events: payload.hits,
-        origin: fromFileRef.current ? "upload" : "edge",
-        ...zoneMeta(),
-      },
-      (event) => {
-        if (event.type === "result") {
-          holdScoreRef.current = false;
-          setStatus((s) => ({ ...s, sending: false, sent: s.sent + 1, incidentId: event.incident.id, paused: null, detail: "Gemini filed an incident" }));
-        } else if (event.type === "error") {
-          holdScoreRef.current = false;
-          setStatus((s) => ({ ...s, sending: false, paused: event.message }));
-        }
-      },
-      undefined,
-      pickFour(stillsRef.current, phaseRef.current.reachAtMs, phaseRef.current.holdAtMs),
-    ).catch((err: Error) => {
-      holdScoreRef.current = false;
-      setStatus((s) => ({ ...s, sending: false, paused: err.message }));
-    })
-      .finally(() => {
-        sendingRef.current = false;
-      });
+    pendingRef.current = null;
+    await send(payload, payload.clip);
   };
 
   return (
@@ -752,6 +769,11 @@ export default function EdgeConsole() {
             <div className="row">
               <span className="chip">{status.fps} fps</span>
               <span className="chip tone-success">{status.sent} sent</span>
+              {status.recording && <span className="chip tone-warning">Gate opened · recording 3 s more</span>}
+              {status.sending && !status.recording && <span className="chip">Gemini is reviewing…</span>}
+              {!status.sending && !status.recording && !status.paused && status.cooldown > 0 && (
+                <span className="chip">Cooling down {status.cooldown} s</span>
+              )}
             </div>
             {Object.entries(status.dwell).map(([id, sec]) => (
               <span key={id} className="muted small">{id}: {sec.toFixed(1)}s in zone</span>
@@ -774,6 +796,7 @@ export default function EdgeConsole() {
             {status.incidentId && (
               <Link href={`/incident?id=${status.incidentId}`} className="btn btn-primary">Open the incident</Link>
             )}
+            <EdgeSendLog sends={sends} />
             <p className="hint" style={{ margin: 0 }}>
               {fromFile
                 ? "Uploaded files skip the live gate. Gemini reviews the blurred clip when playback ends."
