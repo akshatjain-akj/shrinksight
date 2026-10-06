@@ -94,7 +94,11 @@ erDiagram
   the possible hide go to Gemini as `hand_reach` / `hand_hold` (medium detail).
 - **Shop-floor custody:** each item gets `came_from` (shelf, own clothing or bag, …) and `ended_in` (`in_hand` vs
   `concealed`). A server rule (`apply_floor_rule`) never accepts BENIGN for a shelf item that ended concealed, the
-  floor counterpart of the receipt check. Carrying an item openly is BENIGN unless it crosses a marked exit zone.
+  floor counterpart of the receipt check. On the shop floor `ended_in: bag` is the shopper's own bag and counts as
+  concealed. Such a contradiction is decided by the rule, not re-checked (a re-check only invited Gemini to relabel a
+  hide it saw as "put back"); only an unclear origin is re-asked. Floor-only prompt changes use `FLOOR_PROMPT_VERSION`
+  in floor cache keys, so they never re-run cached checkout clips. Carrying an item openly is BENIGN unless it crosses
+  a marked exit zone.
 - **Send log** on Live edge: trigger, verdict, reason, incident link and a download of exactly what Gemini received.
 
 ## Built Tier-1 screening on Investigate
@@ -142,6 +146,8 @@ flowchart LR
   Gemini had said). Investigations on the same camera get the newest few as a short briefing section (~400 tokens).
   The memory version is part of the cache key. It is context, never a rule: the deterministic receipt check runs after
   Gemini, so a past dismissal can't clear an unpaid item that went into the bag. `MEMORY_EXAMPLES=0` turns it off.
+  For test runs, untick "Use this decision as camera memory" on the review; Settings → Cameras shows the camera's
+  memory and can clear it (`DELETE /api/cameras/{id}/memory`, managers only).
 - **Self-calibrating edge gate** (`api/app/edge_tuning.py`): fixed levels (score 0.40→0.55, hot frames 8→15, hide hold
   +0→900 ms). ≥70% false alarms over the last `EDGE_TUNE_MIN_ALERTS` (default 8) edge alerts raises it one level; ≤20%
   relaxes it. A confirmed theft that scored close to the stricter bar blocks the raise. Each change starts a fresh
@@ -659,6 +665,12 @@ within 0.7 s of its moment (`web/lib/marks.ts`), labelled as Gemini's approximat
 
 **Model choice (set in config, confirmed on day 1):** Flash for investigations, Flash-Lite for rule compiling and as
 the fallback model.
+
+**Quota-aware fallback** (`api/app/quota.py`): a 429 rests that model in the shared cache: for Gemini's "retry after"
+(at least 60 s), or until midnight Pacific when the daily quota is used up (no retry is spent on it). Later
+investigations start on the first model that isn't resting, so "Try again" goes straight to a backup. An answer from a
+backup is marked on the incident ("Answered by backup model") and not cached, so the main model answers the same
+clip once its quota is back.
 
 ---
 

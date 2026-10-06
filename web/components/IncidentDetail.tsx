@@ -184,6 +184,8 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
   const [pending, setPending] = useState<"confirm" | "dismiss" | null>(null);
   const [reason, setReason] = useState<DismissReason | ConfirmReason | null>(null);
   const [note, setNote] = useState("");
+  // Off for test runs: the review is kept on the incident but Gemini doesn't learn from it.
+  const [remember, setRemember] = useState(true);
 
   const seek = (t: string, item?: SeenItem) => {
     if (item) setFocus(item);
@@ -211,7 +213,7 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
     setReviewing(true);
     setError(null);
     try {
-      setCurrent(await api.review(incident.id, pending, chosen, trimmed));
+      setCurrent(await api.review(incident.id, pending, chosen, trimmed, remember));
       setPending(null);
     } catch (e) {
       setError((e as Error).message);
@@ -258,6 +260,14 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               {incident.tier1_screen === "cleared" && (
                 <span className="chip" title="Tier-1's gate stayed shut on this clip; staff sent it to Gemini">
                   Tier-1 gate: would not have sent
+                </span>
+              )}
+              {incident.fallback_from && (
+                <span
+                  className="chip tone-warning"
+                  title={`${incident.fallback_from} was rate limited or out of quota, so a backup model answered. Leave this run out of accuracy checks.`}
+                >
+                  Answered by backup model · {incident.model}
                 </span>
               )}
               {incident.tier1_measure && (
@@ -483,7 +493,9 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
               >
                 <p className="small" style={{ margin: 0 }}>
                   {pending === "dismiss" ? "Why is this not a theft?" : "What happened?"}{" "}
-                  <span className="muted">Gemini remembers this for future clips from this camera.</span>
+                  <span className="muted">
+                    {remember ? "Gemini remembers this for future clips from this camera." : "Not used as camera memory."}
+                  </span>
                 </p>
                 <div className="reason-chips" role="group" aria-label="Reason">
                   {(pending === "dismiss" ? DISMISS_REASONS : CONFIRM_REASONS).map(([value, label]) => (
@@ -507,6 +519,10 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                     placeholder={pending === "dismiss" ? "e.g. shopper's own phone" : "e.g. razor pack under the cereal"}
                     onChange={(e) => setNote(e.target.value)}
                   />
+                </label>
+                <label className="row small" style={{ fontWeight: 400, gap: "0.4rem" }}>
+                  <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                  Use this decision as camera memory (untick for test runs)
                 </label>
                 <div className="row">
                   <button

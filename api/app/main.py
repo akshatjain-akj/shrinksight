@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from . import edge_tuning, selftest
+from . import memory as camera_memory
 from .agent import ask as ask_agent
 from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
 from .config import Settings, get_settings
@@ -388,6 +389,25 @@ def save_layout(camera_id: str, body: LayoutIn, request: Request) -> dict:
     return layout.model_dump()
 
 
+@app.get("/api/cameras/{camera_id}/memory")
+def camera_memory_info(camera_id: str) -> dict:
+    """How many past review decisions this camera has, and how many go into each investigation prompt."""
+    repo = get_repo()
+    _camera_or_404(repo, camera_id)
+    saved = repo.feedback(camera_id)
+    return {"camera_id": camera_id, "decisions": len(saved),
+            "used_per_clip": len(camera_memory.pick(saved, cfg().memory_examples))}
+
+
+@app.delete("/api/cameras/{camera_id}/memory")
+def clear_camera_memory(camera_id: str, request: Request) -> dict:
+    """Forgets this camera's past review decisions (e.g. after test runs). Incidents and their reviews stay."""
+    require_manager(request)
+    repo = get_repo()
+    _camera_or_404(repo, camera_id)
+    return {"camera_id": camera_id, "cleared": repo.clear_feedback(camera_id)}
+
+
 class CameraPrefsIn(BaseModel):
     person: bool = True
     concealment: bool = True
@@ -558,6 +578,8 @@ class ReviewIn(BaseModel):
     # Why: kept as this camera's memory and shown to Gemini on later clips
     reason: str | None = Field(default=None, max_length=20)
     note: str = Field(default="", max_length=200)
+    # False for test runs: the decision is recorded on the incident but not shown to Gemini on later clips
+    remember: bool = True
 
     @model_validator(mode="after")
     def reason_fits_decision(self) -> "ReviewIn":
@@ -578,7 +600,10 @@ def review(incident_id: str, body: ReviewIn) -> dict:
     found.review_reason = body.reason
     found.review_note = body.note.strip() or None
     repo.save_incident(found)
-    repo.save_feedback(feedback_from(found, body.decision, body.reason, body.note, found.reviewed_at))
+    if body.remember:
+        repo.save_feedback(feedback_from(found, body.decision, body.reason, body.note, found.reviewed_at))
+    else:
+        repo.delete_feedback(found.id)  # a re-review marked "don't remember" also drops the earlier example
     if found.origin == "edge":
         _retune(repo, found.camera_id)
     return found.model_dump()

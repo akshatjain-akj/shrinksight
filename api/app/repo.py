@@ -57,6 +57,8 @@ class Repo(Protocol):
     def save_layout(self, layout: CameraLayout) -> None: ...
     def feedback(self, camera_id: str) -> list[Feedback]: ...
     def save_feedback(self, item: Feedback) -> None: ...
+    def delete_feedback(self, incident_id: str) -> None: ...
+    def clear_feedback(self, camera_id: str) -> int: ...
     def get_edge_config(self, camera_id: str) -> EdgeConfig | None: ...
     def save_edge_config(self, config: EdgeConfig) -> None: ...
     def get_camera_prefs(self, camera_id: str) -> CameraPrefs | None: ...
@@ -292,6 +294,20 @@ class MemoryRepo:
     def save_feedback(self, item: Feedback) -> None:
         self._put("feedback", item.incident_id, item.model_dump())
 
+    def delete_feedback(self, incident_id: str) -> None:
+        with self._lock:
+            self._data.get("feedback", {}).pop(incident_id, None)
+            self._suppressed.add(("feedback", incident_id))
+
+    def clear_feedback(self, camera_id: str) -> int:
+        with self._lock:
+            bucket = self._data.get("feedback", {})
+            ids = [doc_id for doc_id, doc in bucket.items() if doc.get("camera_id") == camera_id]
+            for doc_id in ids:
+                bucket.pop(doc_id, None)
+                self._suppressed.add(("feedback", doc_id))
+            return len(ids)
+
     def get_edge_config(self, camera_id: str) -> EdgeConfig | None:
         doc = self._get("edge_config", camera_id)
         return EdgeConfig(**doc) if doc else None
@@ -507,6 +523,19 @@ class FirestoreRepo:
 
     def save_feedback(self, item: Feedback) -> None:
         self._put("feedback", item.incident_id, item.model_dump())
+
+    def delete_feedback(self, incident_id: str) -> None:
+        self._db.collection("feedback").document(incident_id).delete()
+
+    def clear_feedback(self, camera_id: str) -> int:
+        query = self._db.collection("feedback").where(filter=self._fs.FieldFilter("camera_id", "==", camera_id))
+        refs = [doc.reference for doc in query.stream()]
+        for start in range(0, len(refs), 400):  # Firestore batches take up to 500 writes
+            batch = self._db.batch()
+            for ref in refs[start:start + 400]:
+                batch.delete(ref)
+            batch.commit()
+        return len(refs)
 
     def get_edge_config(self, camera_id: str) -> EdgeConfig | None:
         doc = self._get("edge_config", camera_id)

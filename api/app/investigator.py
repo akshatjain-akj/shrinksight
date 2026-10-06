@@ -25,6 +25,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from . import memory as camera_memory
+from . import quota
 from .config import Settings
 from .gemini import FALLBACK_CODES, Gateway, GeminiUnavailable, add_usage, model_chain, seconds_left, thinking_config
 from .models import (
@@ -62,6 +63,13 @@ RECHECK_MIN_SECONDS = 15
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
 PROMPT_VERSION = "2026-10-07.tier1-measurements"
+# Shop-floor-only prompt and rule changes go here, in the cache key of floor cameras only, so a floor change never
+# re-runs checkout clips that are already cached.
+FLOOR_PROMPT_VERSION = "2026-10-07.own-bag"
+FLOOR_BAG_NOTE = (
+    "On the shop floor there is no bagging area: an item put into the shopper's own bag (handbag, backpack, tote or "
+    "carrier bag) ended_in concealed. A store basket or cart is not a bag: an item put there stays in_hand."
+)
 TIER1_CLOSE_UPS = (*(f"hand_{n}" for n in range(1, 5)), *(f"trip_{n}" for n in range(1, 7)))
 CLOSE_UP_LABELS = {"pickup_start", "scanner_mid", "bagging_end", "hand_reach", "hand_hold", *TIER1_CLOSE_UPS}
 # Live edge hint kinds that say "nothing happened": a wrong one only talks Gemini out of a real theft.
@@ -371,6 +379,7 @@ def _briefing(
     else:
         policies = [t["result"] for t in tool_results if t["tool"] == "get_zone_policy"]
         parts.append("Zone policy:\n" + json.dumps(policies, ensure_ascii=False))
+        parts.append(FLOOR_BAG_NOTE)
     parts.append(VERDICT_INSTRUCTION)
     return "\n\n".join(parts)
 
@@ -397,8 +406,11 @@ RETRY_LABELS = {FPS_ONLY: "Retrying the clip with only the frame rate set",
                 PLAIN: "Retrying the clip without video settings"}
 
 
-def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float):
-    """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, level)."""
+def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float, on_quota=None):
+    """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, level).
+
+    `on_quota(model, exc)` is called on a 429, so later requests can skip that model while it rests.
+    """
     for index, model in enumerate(models):
         level = FULL
         while True:
@@ -409,6 +421,8 @@ def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadli
                 )
                 return result, model, level
             except GeminiUnavailable as exc:
+                if exc.code == 429 and on_quota is not None:
+                    on_quota(model, exc)
                 if exc.code == 400 and level < PLAIN:
                     # Some models reject fps / media resolution / thinking settings on a browser WebM.
                     level += 1
@@ -470,13 +484,14 @@ def investigate(
     """
     started = time.monotonic()
     deadline = started + settings.agent_deadline_s
-    models = model_chain(settings.investigator_model, settings.fallback_models)
+    chain = model_chain(settings.investigator_model, settings.fallback_models)
     zones = zones or []
     fps = clip_fps(settings, clip_seconds)
     confirmed = inventory or []
     remembered = camera_memory.pick(memory or [], settings.memory_examples)
     photo_hash = hashlib.sha256(scanner_photo).hexdigest()[:16] if scanner_photo else ""
-    variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps(
+    floor = f"|{FLOOR_PROMPT_VERSION}" if camera.kind == "floor" else ""
+    variant = f"{settings.investigator_model}@{fps}fps{floor}|" + json.dumps(
         [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash, tier1_screen,
          tier1_measure.model_dump() if tier1_measure else None]
     )
@@ -560,7 +575,14 @@ def investigate(
         step = time.monotonic()
         stage = "watching the clip"
         yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
-        result, model, level = yield from _watch(gateway, models, contents_for, config_for, deadline)
+        # Models still resting after a 429 (rate limit, or the day's quota) are skipped, so the budget goes to a
+        # model that can answer.
+        models = quota.usable(repo, chain)
+        if models[0] != chain[0]:
+            yield _progress("fallback", f"{chain[0]} is out of quota for now · using backup model {models[0]}",
+                            model=models[0])
+        result, model, level = yield from _watch(gateway, models, contents_for, config_for, deadline,
+                                                 on_quota=lambda name, exc: quota.rest(repo, name, exc))
         timings["watch_ms"] = _ms(step)
         usage = add_usage({}, result.usage)
         first, hard, soft, json_error = _parse(result.text, receipt, confirmed)
@@ -637,8 +659,11 @@ def investigate(
         incident.scanner_photo = scanner_photo_source if scanner_photo else None
         timings["total_ms"] = _ms(started)
         incident.timings = timings
+        incident.fallback_from = settings.investigator_model if model != settings.investigator_model else None
         repo.save_incident(incident)
-        repo.cache_put(key, {"incident_id": incident.id})
+        # A backup model's answer isn't cached: once the main model is back, the same clip gets its answer.
+        if incident.fallback_from is None:
+            repo.cache_put(key, {"incident_id": incident.id})
         yield {"type": "result", "incident": incident.model_dump(), "cached": False}
     except GeminiUnavailable as exc:
         elapsed = time.monotonic() - started
@@ -664,10 +689,11 @@ def _receipt_lines(transaction: Transaction | None, tool_results: list[dict]) ->
 
 
 def _floor_loss(item, verdict_kind: str) -> bool:
-    """On the shop floor an item openly in the hand is not a loss, unless it was carried past the exit (RULE_BREACH)."""
+    """On the shop floor an item openly in the hand is not a loss, unless it was carried past the exit (RULE_BREACH).
+    An item in a bag on the shop floor is in the shopper's own bag: a loss, like one in clothing."""
     if item.ended_in == "in_hand":
         return verdict_kind == "RULE_BREACH"
-    return item.ended_in in ("concealed", "unclear")
+    return item.ended_in in ("concealed", "bag", "unclear")
 
 
 def _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started) -> Incident:

@@ -98,6 +98,14 @@ export const api = {
     request<Zone>("/api/zones", { method: "POST", body: JSON.stringify(body) }),
   deleteZone: (zoneId: string) =>
     request<{ deleted: string }>(`/api/zones/${encodeURIComponent(zoneId)}`, { method: "DELETE" }),
+  cameraMemory: (cameraId: string) =>
+    request<{ camera_id: string; decisions: number; used_per_clip: number }>(
+      `/api/cameras/${encodeURIComponent(cameraId)}/memory`,
+    ),
+  clearCameraMemory: (cameraId: string) =>
+    request<{ camera_id: string; cleared: number }>(`/api/cameras/${encodeURIComponent(cameraId)}/memory`, {
+      method: "DELETE",
+    }),
   cameraPrefs: (cameraId: string) =>
     request<CameraPrefs>(`/api/cameras/${encodeURIComponent(cameraId)}/prefs`),
   saveCameraPrefs: (cameraId: string, body: Omit<CameraPrefs, "camera_id">) =>
@@ -121,10 +129,11 @@ export const api = {
     decision: "confirm" | "dismiss",
     reason: DismissReason | ConfirmReason | null = null,
     note = "",
+    remember = true,
   ) =>
     request<Incident>(`/api/incidents/${encodeURIComponent(id)}/review`, {
       method: "POST",
-      body: JSON.stringify({ decision, reason, note }),
+      body: JSON.stringify({ decision, reason, note, remember }),
     }),
   edgeConfig: (cameraId: string) => request<EdgeConfig>(`/api/edge-config/${encodeURIComponent(cameraId)}`),
   undoEdgeConfig: (cameraId: string) =>

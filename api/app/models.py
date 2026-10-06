@@ -289,6 +289,8 @@ class Incident(BaseModel):
     tier1_screen: Tier1Screen | None = None
     # Investigate's Tier-1 measurements, when they were sent with the clip
     tier1_measure: Tier1Measure | None = None
+    # The configured main model, when a backup model answered instead (rate limit, quota or outage)
+    fallback_from: str | None = None
     usage: TokenUsage | None = None
     inventory_usage: TokenUsage | None = None
     memory_used: list[MemoryRef] = []

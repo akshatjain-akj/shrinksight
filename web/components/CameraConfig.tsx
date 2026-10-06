@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import CameraMemory from "@/components/CameraMemory";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
@@ -397,6 +398,7 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
             </p>
           )}
           {saveError && <ErrorNotice>{saveError}</ErrorNotice>}
+          {camera && <CameraMemory cameraId={camera.id} />}
         </aside>
       </div>
         ) : (

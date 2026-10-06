@@ -28,11 +28,17 @@ MIN_CALL_SECONDS = 12
 
 
 class GeminiUnavailable(Exception):
-    """Gemini could not be reached after retries (quota, outage or timeout)."""
+    """Gemini could not be reached after retries (quota, outage or timeout).
 
-    def __init__(self, message: str, code: int | None = None):
+    For a 429, `daily` says the model's daily quota is used up (it resets at midnight Pacific time) and `retry_after`
+    is Gemini's own "retry after" hint in seconds, when it gave one.
+    """
+
+    def __init__(self, message: str, code: int | None = None, daily: bool = False, retry_after: float | None = None):
         super().__init__(message)
         self.code = code
+        self.daily = daily
+        self.retry_after = retry_after
 
 
 @dataclass
@@ -124,12 +130,15 @@ class GeminiGateway:
                 return _to_result(response)
             except errors.APIError as exc:
                 code = getattr(exc, "code", None)
-                if code not in RETRYABLE_CODES or attempt >= retries:
-                    raise GeminiUnavailable(_friendly(code, str(exc)), code) from exc
-                wait = _retry_after(exc) or (min(4.0, 1.5 * 2**attempt) + random.uniform(0, 0.6))
+                hint = _retry_after(exc)
+                daily = code == 429 and _daily_quota(exc)
+                # A used-up daily quota won't come back in seconds: no retry, let the caller switch models now.
+                if code not in RETRYABLE_CODES or attempt >= retries or daily:
+                    raise GeminiUnavailable(_friendly(code, str(exc)), code, daily, hint) from exc
+                wait = hint or (min(4.0, 1.5 * 2**attempt) + random.uniform(0, 0.6))
                 # Only wait if a retry can still finish inside the budget; otherwise let the caller fall back.
                 if wait > seconds_left(deadline) - 8:
-                    raise GeminiUnavailable(_friendly(code, str(exc)), code) from exc
+                    raise GeminiUnavailable(_friendly(code, str(exc)), code, daily, hint) from exc
             except Exception as exc:
                 if _is_timeout(exc):
                     # Don't retry a slow model: hand back so the caller can try a backup in the time left.
@@ -229,6 +238,15 @@ def _retry_after(exc: Exception) -> float | None:
     except Exception:
         pass
     return None
+
+
+def _daily_quota(exc: Exception) -> bool:
+    """True when a 429 is the per-day quota (quotaId ...PerDay...), not the per-minute rate limit."""
+    try:
+        text = f"{exc} {json.dumps(getattr(exc, 'details', None) or {}, default=str)}"
+    except Exception:
+        text = str(exc)
+    return "PerDay" in text or "per day" in text.lower()
 
 
 def _to_result(response: Any) -> GenResult:

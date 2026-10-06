@@ -242,6 +242,8 @@ export interface Incident {
   /** Investigate's on-device Tier-1 screening: its gate opened, or it cleared the clip and staff sent it anyway. */
   tier1_screen?: "flagged" | "cleared" | null;
   tier1_measure?: Tier1Measure | null;
+  /** The configured main model, when a backup model answered instead (rate limit, quota or outage). */
+  fallback_from?: string | null;
   usage?: TokenUsage | null;
   inventory_usage?: TokenUsage | null;
   memory_used?: MemoryRef[];

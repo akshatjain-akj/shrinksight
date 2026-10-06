@@ -166,38 +166,43 @@ def receipt_lines_text(receipt: list[ReceiptLine]) -> str:
     return f"Till receipt lines (what was actually scanned; set receipt_line to these numbers):\n{lines}"
 
 
+# On the shop floor there is no bagging area, so an item that ended in a bag went into the shopper's own bag.
+FLOOR_HIDDEN = {"concealed", "bag"}
+
+
 def _concealed(verdict: VerdictOut) -> tuple[list[str], list[str]]:
-    """Concealed items split into store items (from the shelf area) and items of unclear origin."""
-    concealed = [i for i in verdict.seen_items if i.ended_in == "concealed" and i.came_from != "own_clothing_or_bag"]
+    """Shop-floor items that ended hidden (concealed, or in the shopper's own bag), split into store items (from the
+    shelf area) and items of unclear origin. Personal items going back where they came from don't count."""
+    concealed = [i for i in verdict.seen_items if i.ended_in in FLOOR_HIDDEN and i.came_from != "own_clothing_or_bag"]
     store = [i.description for i in concealed if i.came_from in ("shelf", "pile", "counter")]
     unclear = [i.description for i in concealed if i.came_from == "unclear"]
     return store, unclear
 
 
 def floor_problems(verdict: VerdictOut) -> list[str]:
-    """What doesn't add up in a shop-floor answer; worth one re-check."""
+    """What doesn't add up in a shop-floor answer; worth one re-check.
+
+    A store item that ended hidden under a non-theft verdict is NOT re-checked: Gemini saw the hide, and asking again
+    only invites it to relabel the item as put back. apply_floor_rule decides that case (CONCEALMENT, for review).
+    Only an unclear origin is asked about, and the question offers no way out of what was seen.
+    """
     if verdict.verdict in POSITIVE_VERDICTS:
         return []
     store, unclear = _concealed(verdict)
-    problems = []
-    if store:
-        problems.append(
-            f"The verdict is {verdict.verdict}, but {', '.join(store)} came from the shelf area and ended concealed. "
-            "That is CONCEALMENT unless it really went back to the shelf or stayed visibly in the hand."
-        )
-    if unclear:
-        problems.append(
-            f"{', '.join(unclear)} ended concealed but came_from is unclear. Watch where it was picked up: the shelf "
-            "area (a store item) or the person's own pocket, clothing or bag (a personal item)."
-        )
-    return problems
+    if store or not unclear:
+        return []
+    return [
+        f"{', '.join(unclear)} ended hidden (in clothing or a bag) but came_from is unclear. Watch only where it was "
+        "first picked up: the shelf area (a store item) or the person's own pocket, clothing or bag (a personal "
+        "item). Keep ended_in as you saw it."
+    ]
 
 
 def apply_floor_rule(verdict: VerdictOut) -> tuple[VerdictOut, str | None, bool]:
     """Deterministic safety rule for the shop floor: a concealed store item is never BENIGN.
 
     Returns (verdict, note, whether Gemini's verdict was overridden).
-    - A store item that ended concealed -> CONCEALMENT.
+    - A store item that ended concealed or in the shopper's bag -> CONCEALMENT.
     - A concealed item of unclear origin -> INCONCLUSIVE (a person looks).
     Carrying an item openly, or a personal item going back into the person's own pocket, stays as Gemini said.
     """
@@ -205,11 +210,11 @@ def apply_floor_rule(verdict: VerdictOut) -> tuple[VerdictOut, str | None, bool]
         return verdict, None, False
     store, unclear = _concealed(verdict)
     if store:
-        note = (f"Floor check: {', '.join(store)} came from the shelf area and ended concealed. Gemini said "
-                f"{verdict.verdict}, so this was flagged for review.")
+        note = (f"Floor check: {', '.join(store)} came from the shelf area and ended concealed (clothing or the "
+                f"shopper's bag). Gemini said {verdict.verdict}, so this was flagged for review.")
         return verdict.model_copy(update={"verdict": "CONCEALMENT", "reason": f"{note} {verdict.reason}"}), note, True
     if unclear and verdict.verdict == "BENIGN":
-        note = (f"Floor check: {', '.join(unclear)} ended concealed and it isn't clear whether it was a store item, "
-                "so a person should look.")
+        note = (f"Floor check: {', '.join(unclear)} ended concealed (clothing or a bag) and it isn't clear whether it "
+                "was a store item, so a person should look.")
         return verdict.model_copy(update={"verdict": "INCONCLUSIVE", "reason": f"{note} {verdict.reason}"}), note, True
     return verdict, None, False
