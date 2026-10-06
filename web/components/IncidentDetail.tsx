@@ -61,8 +61,17 @@ const LOCATION_TEXT: Record<string, string> = {
   never_near_scanner: "never near the scanner",
 };
 
+const CAME_FROM_TEXT: Record<string, string> = {
+  shelf: "from the shelf area",
+  pile: "from the item pile",
+  counter: "from the counter",
+  own_clothing_or_bag: "the person's own item",
+};
+
 const ENDED_TEXT: Record<string, string> = {
   bag: "ended in the bag",
+  in_hand: "still in their hand",
+  concealed: "concealed (pocket, clothing or bag)",
   hand_or_pocket: "kept by the shopper",
   pile: "stayed in the pile",
   put_back: "was put back",
@@ -374,6 +383,33 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                   </tr>
                 </tbody>
               </table>
+            </section>
+          )}
+
+          {!isCheckout && verdict.seen_items.length > 0 && (
+            <section className="card" aria-labelledby="handled-title">
+              <h2 id="handled-title">What the person handled</h2>
+              <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {verdict.seen_items.map((item, i) => (
+                  <li key={i}>
+                    <button type="button" className="linkish" onClick={() => seek(item.picked_up_at ?? item.t, item)}>
+                      {item.description}
+                    </button>{" "}
+                    <span className="time">{item.t}</span>
+                    <span className="seen-meta">
+                      {[
+                        item.came_from && item.came_from !== "unclear" ? CAME_FROM_TEXT[item.came_from] : null,
+                        item.picked_up_at ? `picked up ${item.picked_up_at}` : null,
+                        item.ended_in && item.ended_in !== "unclear"
+                          ? `${ENDED_TEXT[item.ended_in]}${item.ended_at ? ` ${item.ended_at}` : ""}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" → ") || "path unclear"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
 

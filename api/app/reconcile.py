@@ -9,6 +9,9 @@ Problems are split into:
   a remaining hard problem turns the verdict into INCONCLUSIVE rather than a false alarm.
 - soft: suspicious but possible (e.g. fewer items listed than receipt lines, an occlusion). Worth one
   re-ask, then accepted.
+
+The shop floor has no receipt, so it gets its own safety rule: a store item (picked up from the shelf area) that
+ended concealed in a pocket, clothing or a personal bag is never accepted as BENIGN.
 """
 
 from .models import LEFT_BEHIND, POSITIVE_VERDICTS, TAKEN, InventoryItem, ReceiptLine, VerdictOut
@@ -83,7 +86,7 @@ def reconcile(
     elif out.verdict == "BENIGN" and unscanned > 0:
         soft.append(
             f"The verdict is BENIGN, but {unscanned} item(s) match no receipt line. Set ended_in for each (pile, "
-            "put_back, bag, hand_or_pocket) and change the verdict if any were taken."
+            "put_back, bag, in_hand, concealed) and change the verdict if any were taken."
         )
     return out, hard, soft
 
@@ -161,3 +164,52 @@ def receipt_lines_text(receipt: list[ReceiptLine]) -> str:
         return "Till receipt: none available."
     lines = "\n".join(f"{i}. {line.name} (₹{line.price_inr:g})" for i, line in enumerate(receipt, start=1))
     return f"Till receipt lines (what was actually scanned; set receipt_line to these numbers):\n{lines}"
+
+
+def _concealed(verdict: VerdictOut) -> tuple[list[str], list[str]]:
+    """Concealed items split into store items (from the shelf area) and items of unclear origin."""
+    concealed = [i for i in verdict.seen_items if i.ended_in == "concealed" and i.came_from != "own_clothing_or_bag"]
+    store = [i.description for i in concealed if i.came_from in ("shelf", "pile", "counter")]
+    unclear = [i.description for i in concealed if i.came_from == "unclear"]
+    return store, unclear
+
+
+def floor_problems(verdict: VerdictOut) -> list[str]:
+    """What doesn't add up in a shop-floor answer; worth one re-check."""
+    if verdict.verdict in POSITIVE_VERDICTS:
+        return []
+    store, unclear = _concealed(verdict)
+    problems = []
+    if store:
+        problems.append(
+            f"The verdict is {verdict.verdict}, but {', '.join(store)} came from the shelf area and ended concealed. "
+            "That is CONCEALMENT unless it really went back to the shelf or stayed visibly in the hand."
+        )
+    if unclear:
+        problems.append(
+            f"{', '.join(unclear)} ended concealed but came_from is unclear. Watch where it was picked up: the shelf "
+            "area (a store item) or the person's own pocket, clothing or bag (a personal item)."
+        )
+    return problems
+
+
+def apply_floor_rule(verdict: VerdictOut) -> tuple[VerdictOut, str | None, bool]:
+    """Deterministic safety rule for the shop floor: a concealed store item is never BENIGN.
+
+    Returns (verdict, note, whether Gemini's verdict was overridden).
+    - A store item that ended concealed -> CONCEALMENT.
+    - A concealed item of unclear origin -> INCONCLUSIVE (a person looks).
+    Carrying an item openly, or a personal item going back into the person's own pocket, stays as Gemini said.
+    """
+    if verdict.verdict in POSITIVE_VERDICTS:
+        return verdict, None, False
+    store, unclear = _concealed(verdict)
+    if store:
+        note = (f"Floor check: {', '.join(store)} came from the shelf area and ended concealed. Gemini said "
+                f"{verdict.verdict}, so this was flagged for review.")
+        return verdict.model_copy(update={"verdict": "CONCEALMENT", "reason": f"{note} {verdict.reason}"}), note, True
+    if unclear and verdict.verdict == "BENIGN":
+        note = (f"Floor check: {', '.join(unclear)} ended concealed and it isn't clear whether it was a store item, "
+                "so a person should look.")
+        return verdict.model_copy(update={"verdict": "INCONCLUSIVE", "reason": f"{note} {verdict.reason}"}), note, True
+    return verdict, None, False

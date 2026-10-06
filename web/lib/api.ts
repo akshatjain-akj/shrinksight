@@ -146,7 +146,17 @@ export const api = {
 };
 
 export interface MarkedStill {
-  label: "before" | "reach" | "hold" | "after" | "pickup_start" | "scanner_mid" | "bagging_end" | "scanner_ref";
+  label:
+    | "before"
+    | "reach"
+    | "hold"
+    | "after"
+    | "pickup_start"
+    | "scanner_mid"
+    | "bagging_end"
+    | "hand_reach"
+    | "hand_hold"
+    | "scanner_ref";
   blob: Blob;
 }
 

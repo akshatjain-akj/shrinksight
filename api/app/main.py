@@ -523,9 +523,10 @@ def _parse_meta(header: str | None) -> InvestigateMeta:
         raise HTTPException(400, "Invalid x-shrinksight-meta header") from exc
 
 
-# Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked), then the optional
-# reference photo of the scanning device uploaded with this clip.
-STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end", "scanner_ref")
+# Time-ordered stills, then zone close-ups (sent by the Investigate page when zones are marked), then the Live edge's
+# hand close-ups at the reach and the possible hide, then the optional reference photo of the scanning device.
+STILL_LABELS = ("before", "reach", "hold", "after", "pickup_start", "scanner_mid", "bagging_end", "hand_reach",
+                "hand_hold", "scanner_ref")
 MAX_STILLS = len(STILL_LABELS)
 STILL_LIMIT = 400_000  # the high-detail item-pile close-up can be up to ~1024 px wide
 

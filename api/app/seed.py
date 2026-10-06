@@ -21,7 +21,7 @@ from .models import (
     Zone,
 )
 
-SEED_VERSION = "2026-10-05.memory"
+SEED_VERSION = "2026-10-06.floor"
 STORE_NAME = "Demo Mart (synthetic)"
 
 CAMERAS = [
@@ -134,7 +134,8 @@ INCIDENTS = [
         verdict=VerdictOut(
             verdict="CONCEALMENT", confidence=0.86, items_seen=1, items_scanned=0,
             seen_items=[SeenItem(t="00:03.4", description="whisky bottle", scanned=False,
-                                 box_2d=[350, 450, 620, 540])],
+                                 box_2d=[350, 450, 620, 540], came_from="shelf", ended_in="concealed",
+                                 picked_up_at="00:02.1", ended_at="00:03.4")],
             timeline=[TimelineEvent(t="00:02.1", event="takes a bottle from the spirits shelf"),
                       TimelineEvent(t="00:03.4", event="places the bottle inside a jacket"),
                       TimelineEvent(t="00:05.0", event="walks away from the shelf")],
@@ -209,7 +210,7 @@ INCIDENTS = [
                         SeenItem(t="00:05.6", description="biscuits pack", scanned=True, receipt_line=4),
                         SeenItem(t="00:06.8", description="butter pack", scanned=True, receipt_line=5),
                         SeenItem(t="00:08.3", description="black phone", scanned=False,
-                                 location="never_near_scanner", ended_in="hand_or_pocket")],
+                                 location="never_near_scanner", came_from="counter", ended_in="concealed")],
             timeline=[TimelineEvent(t="00:08.3", event="picks a phone up from the bagging shelf and pockets it")],
             reason="A black handheld object went from the bagging shelf into a pocket without being scanned.",
         ),

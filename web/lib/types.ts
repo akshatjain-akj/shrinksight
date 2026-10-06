@@ -55,8 +55,10 @@ export interface SeenItem {
   location?: ItemLocation;
   /** # in the confirmed item list, or null for an extra item. */
   inventory_id?: number | null;
-  /** Where the item finished up. */
-  ended_in?: "bag" | "hand_or_pocket" | "pile" | "put_back" | "unclear";
+  /** Where the item finished up ("hand_or_pocket" only on older incidents). */
+  ended_in?: "bag" | "in_hand" | "concealed" | "hand_or_pocket" | "pile" | "put_back" | "unclear";
+  /** Where it was first picked up; own_clothing_or_bag means a personal item. */
+  came_from?: "shelf" | "pile" | "counter" | "own_clothing_or_bag" | "unclear";
   /** Chain of custody, clip timestamps. */
   picked_up_at?: string | null;
   scanner_at?: string | null;

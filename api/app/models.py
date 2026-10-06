@@ -13,9 +13,12 @@ RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BY
 ConcealmentOf = Literal["pocket", "bag", "shirt", "waistband"]
 ItemLocation = Literal["over_scanner", "beside_scanner", "hidden_under_item", "never_near_scanner", "unclear"]
 # Where an item finished up. This, not the scanner path, decides whether an unscanned item is a loss.
-EndedIn = Literal["bag", "hand_or_pocket", "pile", "put_back", "unclear"]
-TAKEN = {"bag", "hand_or_pocket"}
+# "in_hand" = still visibly held or carried; "concealed" = in a pocket, clothing, a sleeve or a personal bag.
+EndedIn = Literal["bag", "in_hand", "concealed", "pile", "put_back", "unclear"]
+TAKEN = {"bag", "in_hand", "concealed"}
 LEFT_BEHIND = {"pile", "put_back"}
+# Where an item came from. Decides store item vs personal item (an object out of the shopper's own pocket).
+CameFrom = Literal["shelf", "pile", "counter", "own_clothing_or_bag", "unclear"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 # Why a manager dismissed or confirmed an alert. The reason becomes the camera's memory, not just the decision.
 DismissReason = Literal["personal_item", "rescan", "bagging", "staff", "camera", "other"]
@@ -100,9 +103,22 @@ class SeenItem(BaseModel):
     ended_at: str | None = Field(default=None, description="When it reached where it finished (mm:ss.s), or null")
     ended_in: EndedIn = Field(
         default="unclear",
-        description="Where the item finished: bag, hand_or_pocket (kept by the shopper), pile (never moved), "
-        "put_back, or unclear",
+        description="Where the item finished: bag (shopping bag at the bagging area), in_hand (still visibly held or "
+        "carried), concealed (put into a pocket, clothing, a sleeve, the waistband or a personal bag), pile (never "
+        "moved), put_back, or unclear",
     )
+    came_from: CameFrom = Field(
+        default="unclear",
+        description="Where the item was first picked up: shelf (the shelf zone or any surface in or under it), pile "
+        "(the item pile at a checkout), counter, own_clothing_or_bag (it came out of the person's own pocket, "
+        "clothing or bag), or unclear",
+    )
+
+    @field_validator("ended_in", mode="before")
+    @classmethod
+    def _legacy_ended_in(cls, value):
+        # Older incidents used one value for both; "kept by the shopper" reads best as still in hand.
+        return "in_hand" if value == "hand_or_pocket" else value
 
 
 class InventoryItem(BaseModel):

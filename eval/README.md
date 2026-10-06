@@ -20,6 +20,12 @@ Edit `manifest.json`. One entry per video file:
 
 Entries containing `FILL_ME` are skipped until you fill them in.
 
+### Shop-floor clips from Live edge
+On Live edge, every send has a **Download clip** link: that file is exactly what Gemini received. Save a few (pocket a
+small item from the shelf, carry one away in your hand, put one back, take your own phone out and back) into the clips
+folder and add them with `camera_id` `cam-aisle-4` or `cam-aisle-2`, no `receipt`, and the expected verdict
+(`CONCEALMENT` for the pocket, `BENIGN` for the others).
+
 ## 2. Run
 ```bash
 cd api
