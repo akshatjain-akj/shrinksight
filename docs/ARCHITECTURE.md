@@ -396,7 +396,7 @@ sequenceDiagram
     K-->>G: miss
     G->>A: start investigation
     A-->>UI: SSE "Watching clip…"
-    A->>GM: clip (fps≈5, low res) + system prompt + tool declarations
+    A->>GM: clip (3–8 fps by length, low res) + system prompt + tool declarations
     GM-->>A: function_call get_pos_transaction(lane=3, window)
     A->>FS: read pos_transactions
     FS-->>A: receipt: 4 line items (SKUs, times)

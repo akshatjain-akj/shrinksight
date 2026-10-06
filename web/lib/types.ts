@@ -23,6 +23,16 @@ export interface Camera {
   zone_ids: string[];
 }
 
+export interface CameraPrefs {
+  camera_id: string;
+  person: boolean;
+  concealment: boolean;
+  loitering: boolean;
+  loiter_seconds: number;
+  shelf_reach: boolean;
+  health_hazard: boolean;
+}
+
 export interface RosterPerson {
   id: string;
   email: string;

@@ -9,8 +9,7 @@ import { toTuning, useEdgeConfig, useRules, useStore } from "@/lib/hooks";
 import type { Tier1Hit } from "@/lib/tier1/engine.ts";
 import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { drawZoneOutlines, shapesToHints } from "@/lib/tier1/zones";
-import type { Pt, ZoneShape } from "@/lib/tier1/geometry.ts";
-import { posePeople } from "@/lib/tier1/people.ts";
+import { personBox, type Pt, type ZoneShape } from "@/lib/tier1/geometry.ts";
 import { PersonTracker } from "@/lib/tier1/tracks.ts";
 import { Tier1Engine } from "@/lib/tier1/engine.ts";
 import { privacyBoxes } from "@/lib/tier1/privacy.ts";
@@ -113,6 +112,55 @@ function strokePersonBox(
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, w, h);
   ctx.restore();
+}
+
+type Landmark = { x: number; y: number; visibility?: number };
+
+function posePeople(poses: Landmark[][], tMs: number) {
+  const people = poses.flatMap((pose) => {
+    const visible = (i: number): Pt | null => {
+      const p = pose[i];
+      const min = i === 15 || i === 16 ? 0.35 : 0.5;
+      if (!p || (p.visibility ?? 0) < min) return null;
+      return { x: p.x, y: p.y };
+    };
+    const points = pose.filter((p) => (p.visibility ?? 0) >= 0.5).map((p) => ({ x: p.x, y: p.y }));
+    const leftHip = visible(23);
+    const rightHip = visible(24);
+    const shoulder = visible(11) ?? visible(12);
+    const hip = leftHip && rightHip
+      ? { x: (leftHip.x + rightHip.x) / 2, y: (leftHip.y + rightHip.y) / 2 }
+      : leftHip ?? rightHip;
+    if (!hip || !shoulder || points.length < 8) return [];
+    const box = personBox(points);
+    return [{
+      hip,
+      box,
+      sample: {
+        tMs,
+        present: true,
+        leftWrist: visible(15),
+        rightWrist: visible(16),
+        leftHip,
+        rightHip,
+        leftShoulder: visible(11),
+        rightShoulder: visible(12),
+        box,
+      },
+    }];
+  });
+  const kept: typeof people = [];
+  const ranked = [...people].sort((a, b) => boxArea(b.box) - boxArea(a.box));
+  for (const person of ranked) {
+    if (kept.some((other) => Math.hypot(other.hip.x - person.hip.x, other.hip.y - person.hip.y) < 0.22)) continue;
+    kept.push(person);
+  }
+  return kept;
+}
+
+function boxArea(box: [number, number, number, number] | null): number {
+  if (!box) return 0;
+  return Math.max(0, box[2] - box[0]) * Math.max(0, box[3] - box[1]);
 }
 
 function withCamera(hits: Tier1Hit[], cameraId: string): Tier1Hit[] {

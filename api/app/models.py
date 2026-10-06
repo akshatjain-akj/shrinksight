@@ -311,6 +311,18 @@ class CameraLayout(BaseModel):
     updated_at: str
 
 
+class CameraPrefs(BaseModel):
+    """Detection switches for one camera. Optional cloud copy of what the browser otherwise keeps locally."""
+
+    camera_id: str
+    person: bool = True
+    concealment: bool = True
+    loitering: bool = True
+    loiter_seconds: int = Field(default=30, ge=10, le=120)
+    shelf_reach: bool = True
+    health_hazard: bool = True
+
+
 class ZoneSuggestion(BaseModel):
     zone_id: str
     found: bool = Field(description="False if this area isn't visible in the frame")

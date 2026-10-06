@@ -201,11 +201,17 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
   };
 
   const review = async () => {
-    if (!pending) return;
+    if (!pending || reviewing) return;
+    const trimmed = note.trim();
+    const chosen = reason ?? (trimmed ? "other" : null);
+    if (pending === "dismiss" && !chosen) {
+      setError("Pick a reason or write a note first.");
+      return;
+    }
     setReviewing(true);
     setError(null);
     try {
-      setCurrent(await api.review(incident.id, pending, reason, note.trim()));
+      setCurrent(await api.review(incident.id, pending, chosen, trimmed));
       setPending(null);
     } catch (e) {
       setError((e as Error).message);
@@ -462,7 +468,14 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
           <section className="card stack" aria-labelledby="review-title">
             <h2 id="review-title">Human review</h2>
             {pending ? (
-              <div className="stack" style={{ gap: "0.5rem" }}>
+              <form
+                className="stack"
+                style={{ gap: "0.5rem" }}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void review();
+                }}
+              >
                 <p className="small" style={{ margin: 0 }}>
                   {pending === "dismiss" ? "Why is this not a theft?" : "What happened?"}{" "}
                   <span className="muted">Gemini remembers this for future clips from this camera.</span>
@@ -492,10 +505,9 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                 </label>
                 <div className="row">
                   <button
-                    type="button"
+                    type="submit"
                     className={`btn ${pending === "dismiss" ? "btn-danger" : "btn-success"}`}
-                    disabled={reviewing || (pending === "dismiss" && !reason)}
-                    onClick={review}
+                    disabled={reviewing}
                   >
                     {pending === "dismiss" ? "✗ Dismiss" : "✓ Confirm"}
                   </button>
@@ -503,7 +515,7 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
                     Cancel
                   </button>
                 </div>
-              </div>
+              </form>
             ) : current.status === "NEEDS_REVIEW" ? (
               <>
                 <p className="muted small" style={{ margin: 0 }}>

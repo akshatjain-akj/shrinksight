@@ -168,7 +168,7 @@ export default function MonitorPage() {
         <div className="row">
           <span className={`chip ${live ? "tone-success" : ""}`}>{live ? "Live" : "Connecting"}</span>
           <Link href="/investigate" className="btn btn-primary">Investigate a clip</Link>
-          <Link href="/rules" className="btn">Store rules</Link>
+          <Link href="/settings?section=rules" className="btn">Store rules</Link>
         </div>
       </div>
 

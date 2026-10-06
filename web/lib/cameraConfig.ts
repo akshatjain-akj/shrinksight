@@ -21,6 +21,13 @@ export interface SavedCamera {
 
 const KEY = "shrinksight.camera-config";
 
+/** NEXT_PUBLIC_SAVE_TO_FIRESTORE=false keeps detection and zone shapes on this browser. Unset means on. */
+export function cloudSyncEnabled(): boolean {
+  const flag = process.env.NEXT_PUBLIC_SAVE_TO_FIRESTORE;
+  if (flag == null || flag === "") return true;
+  return !["0", "false", "off", "no"].includes(flag.toLowerCase());
+}
+
 export const DEFAULT_DETECTION: DetectionSwitches = {
   person: true,
   concealment: true,
@@ -88,6 +95,10 @@ let synced: Promise<void> | null = null;
 
 /** Pulls every camera's saved layout once per page load. Failures are ignored (presets still work). */
 export function syncLayoutsFromServer(force = false): Promise<void> {
+  if (!cloudSyncEnabled()) {
+    synced = Promise.resolve();
+    return synced;
+  }
   if (!synced || force) {
     synced = api
       .layouts()

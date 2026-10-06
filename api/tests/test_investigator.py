@@ -4,7 +4,7 @@ from dataclasses import replace
 from conftest import FakeGateway, text
 
 from app.gemini import GeminiUnavailable
-from app.investigator import investigate, normalise_mime
+from app.investigator import clip_fps, investigate, normalise_mime
 
 CLIP = b"\x00fake-video-bytes"
 
@@ -168,14 +168,31 @@ def test_non_retryable_error_does_not_fall_back(repo, settings):
     assert events[-1]["type"] == "error" and len(gateway.calls) == 1
 
 
-def test_metadata_rejection_retries_the_plain_clip(repo, settings):
-    gateway = FakeGateway([GeminiUnavailable("bad video metadata", 400), text(verdict_json())])
+def _clip_parts(contents):
+    return [p for p in contents[0].parts if p.inline_data and p.inline_data.mime_type == "video/webm"]
+
+
+def test_first_metadata_rejection_keeps_the_frame_rate(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("bad media resolution", 400), text(verdict_json())])
 
     events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
 
-    assert events[-1]["type"] == "result"
+    assert events[-1]["type"] == "result" and len(gateway.calls) == 2
     _, contents, config = gateway.calls[-1]
-    videos = [p for p in contents[0].parts if p.inline_data and p.inline_data.mime_type == "video/webm"]
+    videos = _clip_parts(contents)
+    assert videos and all(p.video_metadata.fps == settings.clip_fps and p.media_resolution is None for p in videos)
+    assert config.media_resolution is None and config.thinking_config is None
+
+
+def test_second_metadata_rejection_retries_the_plain_clip(repo, settings):
+    gateway = FakeGateway([GeminiUnavailable("bad video metadata", 400),
+                           GeminiUnavailable("bad video metadata", 400), text(verdict_json())])
+
+    events = run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"))
+
+    assert events[-1]["type"] == "result" and len(gateway.calls) == 3
+    _, contents, config = gateway.calls[-1]
+    videos = _clip_parts(contents)
     assert videos and all(p.video_metadata is None for p in videos)
     assert config.media_resolution is None and config.thinking_config is None
 
@@ -300,8 +317,12 @@ def test_close_ups_get_high_detail_and_video_low(repo, settings):
     assert gateway.calls[0][2].media_resolution is None, "no request-wide resolution that would shrink the close-ups"
 
 
-def test_long_clips_are_sampled_at_3_fps(repo, settings):
-    for seconds, fps in ((8, 5), (13, 3)):
+def test_clip_fps_tier_boundaries(settings):
+    assert [clip_fps(settings, s) for s in (None, 6, 6.1, 10, 10.1)] == [5, 8, 5, 5, 3]
+
+
+def test_short_clips_are_sampled_densely_and_long_clips_at_3_fps(repo, settings):
+    for seconds, fps in ((4, 8), (8, 5), (13, 3)):
         gateway = FakeGateway([text(verdict_json())])
         run(repo, gateway, settings, transaction=repo.get_transaction("TXN-L2-2041"), clip_seconds=seconds)
         video = next(p for p in gateway.calls[0][1][0].parts if p.video_metadata)

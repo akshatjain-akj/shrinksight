@@ -10,7 +10,19 @@ import time
 from typing import Any, Protocol
 
 from . import seed
-from .models import Camera, CameraLayout, EdgeConfig, Feedback, Incident, Rule, Sku, Transaction, UserAccount, Zone
+from .models import (
+    Camera,
+    CameraLayout,
+    CameraPrefs,
+    EdgeConfig,
+    Feedback,
+    Incident,
+    Rule,
+    Sku,
+    Transaction,
+    UserAccount,
+    Zone,
+)
 
 
 class Repo(Protocol):
@@ -18,6 +30,7 @@ class Repo(Protocol):
     def cameras(self) -> list[Camera]: ...
     def save_camera(self, camera: Camera) -> None: ...
     def save_zone(self, zone: Zone) -> None: ...
+    def delete_zone(self, zone_id: str) -> None: ...
     def delete_camera(self, camera_id: str) -> None: ...
     def zones(self) -> list[Zone]: ...
     def skus(self) -> list[Sku]: ...
@@ -46,6 +59,8 @@ class Repo(Protocol):
     def save_feedback(self, item: Feedback) -> None: ...
     def get_edge_config(self, camera_id: str) -> EdgeConfig | None: ...
     def save_edge_config(self, config: EdgeConfig) -> None: ...
+    def get_camera_prefs(self, camera_id: str) -> CameraPrefs | None: ...
+    def save_camera_prefs(self, prefs: CameraPrefs) -> None: ...
     def scanner_photos(self) -> dict[str, str]: ...
     def get_scanner_photo(self, camera_id: str) -> tuple[bytes, str] | None: ...
     def save_scanner_photo(self, camera_id: str, data: bytes, updated_at: str) -> None: ...
@@ -87,6 +102,13 @@ def _seed_documents() -> dict[str, dict[str, dict]]:
     }
 
 
+def _seed_camera(doc: dict, zones: list[dict], gone: set[str]) -> dict:
+    """A seed camera as re-seeding should write it: zones the store added stay attached, deleted ones stay gone."""
+    ids = [zone_id for zone_id in doc.get("zone_ids") or [] if zone_id not in gone]
+    ids += [z["id"] for z in zones if z.get("camera_id") == doc["id"] and z["id"] not in ids and z["id"] not in gone]
+    return {**doc, "zone_ids": ids}
+
+
 class MemoryRepo:
     def __init__(self, seeded: bool = True):
         self._data: dict[str, dict[str, dict]] = {}
@@ -108,6 +130,12 @@ class MemoryRepo:
                         bucket.setdefault(doc_id, doc)
                     else:
                         bucket[doc_id] = doc
+            # Zones are seeded before cameras are fixed up, so a seed camera keeps zones added to it.
+            gone = {doc_id for collection, doc_id in self._suppressed if collection == "zones"}
+            zones = list(self._data.get("zones", {}).values())
+            cameras = self._data.get("cameras", {})
+            for camera_id in [c.id for c in seed.CAMERAS if c.id in cameras]:
+                cameras[camera_id] = _seed_camera(cameras[camera_id], zones, gone)
 
     def _all(self, collection: str) -> list[dict]:
         return list(self._data.get(collection, {}).values())
@@ -128,6 +156,15 @@ class MemoryRepo:
     def save_zone(self, zone: Zone) -> None:
         self._put("zones", zone.id, zone.model_dump())
 
+    def delete_zone(self, zone_id: str) -> None:
+        with self._lock:
+            self._data.get("zones", {}).pop(zone_id, None)
+            self._suppressed.add(("zones", zone_id))
+            for camera in self._data.get("cameras", {}).values():
+                ids = camera.get("zone_ids") or []
+                if zone_id in ids:
+                    camera["zone_ids"] = [item for item in ids if item != zone_id]
+
     def delete_camera(self, camera_id: str) -> None:
         with self._lock:
             camera = self._data.get("cameras", {}).pop(camera_id, None)
@@ -140,6 +177,8 @@ class MemoryRepo:
                     self._suppressed.add(("zones", zone_id))
             self._data.get("layouts", {}).pop(camera_id, None)
             self._data.get("edge_config", {}).pop(camera_id, None)
+            self._data.get("camera_prefs", {}).pop(camera_id, None)
+            self._suppressed.add(("camera_prefs", camera_id))
 
     def zones(self) -> list[Zone]:
         return [Zone(**d) for d in self._all("zones")]
@@ -260,6 +299,13 @@ class MemoryRepo:
     def save_edge_config(self, config: EdgeConfig) -> None:
         self._put("edge_config", config.camera_id, config.model_dump())
 
+    def get_camera_prefs(self, camera_id: str) -> CameraPrefs | None:
+        doc = self._get("camera_prefs", camera_id)
+        return CameraPrefs(**doc) if doc else None
+
+    def save_camera_prefs(self, prefs: CameraPrefs) -> None:
+        self._put("camera_prefs", prefs.camera_id, prefs.model_dump())
+
     def scanner_photos(self) -> dict[str, str]:
         return {d["camera_id"]: d["updated_at"] for d in self._all("scanner_photos")}
 
@@ -292,8 +338,11 @@ class FirestoreRepo:
         snapshot = meta.get()
         if not snapshot.exists or (snapshot.to_dict() or {}).get("version") != seed.SEED_VERSION:
             batch = self._db.batch()
+            zones = self._all("zones")
             for collection, docs in _seed_documents().items():
                 for doc_id, doc in docs.items():
+                    if collection == "cameras":
+                        doc = _seed_camera(doc, zones, set())
                     batch.set(self._db.collection(collection).document(doc_id), doc)
             batch.set(meta, {"version": seed.SEED_VERSION})
             batch.commit()
@@ -318,6 +367,15 @@ class FirestoreRepo:
     def save_zone(self, zone: Zone) -> None:
         self._put("zones", zone.id, zone.model_dump())
 
+    def delete_zone(self, zone_id: str) -> None:
+        zone = self._get("zones", zone_id)
+        if zone:
+            camera = self._get("cameras", zone.get("camera_id", ""))
+            if camera:
+                camera["zone_ids"] = [item for item in camera.get("zone_ids") or [] if item != zone_id]
+                self._put("cameras", camera["id"], camera)
+        self._db.collection("zones").document(zone_id).delete()
+
     def delete_camera(self, camera_id: str) -> None:
         camera = self._get("cameras", camera_id) or {}
         zone_ids = set(camera.get("zone_ids") or [])
@@ -327,6 +385,7 @@ class FirestoreRepo:
         self._db.collection("cameras").document(camera_id).delete()
         self._db.collection("layouts").document(camera_id).delete()
         self._db.collection("edge_config").document(camera_id).delete()
+        self._db.collection("camera_prefs").document(camera_id).delete()
 
     def zones(self) -> list[Zone]:
         return [Zone(**d) for d in self._all("zones")]
@@ -455,6 +514,13 @@ class FirestoreRepo:
 
     def save_edge_config(self, config: EdgeConfig) -> None:
         self._put("edge_config", config.camera_id, config.model_dump())
+
+    def get_camera_prefs(self, camera_id: str) -> CameraPrefs | None:
+        doc = self._get("camera_prefs", camera_id)
+        return CameraPrefs(**doc) if doc else None
+
+    def save_camera_prefs(self, prefs: CameraPrefs) -> None:
+        self._put("camera_prefs", prefs.camera_id, prefs.model_dump())
 
     def scanner_photos(self) -> dict[str, str]:
         # Only the timestamps: the photo bytes are read one camera at a time.

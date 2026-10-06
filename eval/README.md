@@ -15,7 +15,7 @@ Edit `manifest.json`. One entry per video file:
 | `expected.verdict` | `BENIGN` if everything was paid for, `SCAN_AVOIDANCE` / `CONCEALMENT` otherwise |
 | `expected.unscanned` | Items handled but **not** on the receipt |
 | `inventory` (optional) | The items really in the pile, e.g. `["bottle", "flat cloth flower", "black biscuit packet"]`. Runs as if this list was confirmed in the browser, so you can measure tracking separately from discovery |
-| `seconds` (optional) | Clip length; clips over 10 s are sampled at 3 fps, as on the website |
+| `seconds` (optional) | Clip length; clips up to 6 s are sampled at 8 fps and clips over 10 s at 3 fps (5 fps between), as on the website |
 | `zones` (optional) | Where the scanner/bagging areas are in this clip. On the Investigate page, mark them and click **Copy zones for eval**, then paste here |
 
 Entries containing `FILL_ME` are skipped until you fill them in.

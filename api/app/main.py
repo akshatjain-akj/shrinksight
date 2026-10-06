@@ -23,6 +23,7 @@ from .models import (
     POSITIVE_VERDICTS,
     Camera,
     CameraLayout,
+    CameraPrefs,
     ConfirmReason,
     DismissReason,
     InventoryItem,
@@ -252,6 +253,50 @@ def create_camera(body: CameraIn, request: Request) -> dict:
     return {"camera": camera.model_dump(), "zones": [z.model_dump() for z in zones]}
 
 
+class ZoneIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    camera_id: str = Field(min_length=2, max_length=40)
+    kind: Literal["pickup", "scanner", "bagging", "shelf", "exit"]
+    high_value: bool = False
+
+
+@app.post("/api/zones", status_code=201)
+def create_zone(body: ZoneIn, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera = _camera_or_404(repo, body.camera_id)
+    enforce_limits(request, repo, "layouts", cfg().daily_layout_saves)
+    zone = Zone(
+        id=f"z-{uuid.uuid4().hex[:8]}",
+        name=body.name.strip(),
+        camera_id=camera.id,
+        kind=body.kind,
+        high_value=body.high_value,
+    )
+    camera.zone_ids = [*camera.zone_ids, zone.id]
+    repo.save_zone(zone)
+    repo.save_camera(camera)
+    return zone.model_dump()
+
+
+@app.delete("/api/zones/{zone_id}")
+def remove_zone(zone_id: str, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    zone = next((item for item in repo.zones() if item.id == zone_id), None)
+    if zone is None:
+        raise HTTPException(404, "Zone not found")
+    # Disabled rules count too: turning one back on must not leave it pointing at a deleted zone.
+    if any(rule.spec.zone_id == zone_id for rule in repo.rules()):
+        raise HTTPException(400, f"A rule still uses {zone.name}. Delete that rule or point it somewhere else first.")
+    repo.delete_zone(zone.id)
+    layout = repo.get_layout(zone.camera_id)
+    if layout is not None and any(hint.zone_id == zone.id for hint in layout.zones):
+        kept = [hint for hint in layout.zones if hint.zone_id != zone.id]
+        repo.save_layout(layout.model_copy(update={"zones": kept, "updated_at": _now_iso()}))
+    return {"deleted": zone.id}
+
+
 @app.delete("/api/cameras/{camera_id}")
 def remove_camera(camera_id: str, request: Request) -> dict:
     require_manager(request)
@@ -340,6 +385,36 @@ def save_layout(camera_id: str, body: LayoutIn, request: Request) -> dict:
     layout = CameraLayout(camera_id=camera.id, zones=body.zones, updated_at=_now_iso())
     repo.save_layout(layout)
     return layout.model_dump()
+
+
+class CameraPrefsIn(BaseModel):
+    person: bool = True
+    concealment: bool = True
+    loitering: bool = True
+    loiter_seconds: int = Field(default=30, ge=10, le=120)
+    shelf_reach: bool = True
+    health_hazard: bool = True
+
+
+@app.get("/api/cameras/{camera_id}/prefs")
+def camera_prefs(camera_id: str) -> dict:
+    repo = get_repo()
+    _camera_or_404(repo, camera_id)
+    prefs = repo.get_camera_prefs(camera_id)
+    if prefs is None:
+        raise HTTPException(404, "No saved detection settings for this camera")
+    return prefs.model_dump()
+
+
+@app.put("/api/cameras/{camera_id}/prefs")
+def save_camera_prefs(camera_id: str, body: CameraPrefsIn, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    enforce_limits(request, repo, "layouts", cfg().daily_layout_saves)
+    prefs = CameraPrefs(camera_id=camera.id, **body.model_dump())
+    repo.save_camera_prefs(prefs)
+    return prefs.model_dump()
 
 
 IMAGE_MIME = {"image/jpeg": "image/jpeg", "image/png": "image/png"}
