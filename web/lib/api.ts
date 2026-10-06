@@ -218,6 +218,8 @@ export interface InvestigateMeta {
   /** "none" skips the camera's saved scanner photo for this clip. */
   scanner_photo?: "saved" | "none";
   inventory_usage?: TokenUsage;
+  /** Set when Investigate screened the clip with Tier-1 first ("cleared" = sent anyway). */
+  tier1_screen?: "flagged" | "cleared";
   tier1_events?: {
     t: string;
     kind: string;

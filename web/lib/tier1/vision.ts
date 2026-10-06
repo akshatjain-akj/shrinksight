@@ -18,12 +18,30 @@ export interface VisionModels {
   close: () => void;
 }
 
+const POSE_OPTIONS = {
+  runningMode: "VIDEO" as const,
+  numPoses: 3,
+  // Fewer "ghost" people in cluttered aisles, and earlier re-detection when hands move fast.
+  minPoseDetectionConfidence: 0.6,
+  minPosePresenceConfidence: 0.6,
+  minTrackingConfidence: 0.65,
+};
+
 async function withDelegate<T>(create: (delegate: "GPU" | "CPU") => Promise<T>): Promise<T> {
   try {
     return await create("GPU");
   } catch {
     return await create("CPU");
   }
+}
+
+/** Pose only (Investigate's Tier-1 screening needs no face or object models). Close it when done. */
+export async function loadPose(): Promise<PoseLandmarker> {
+  const vision = await import("@mediapipe/tasks-vision");
+  const fileset = await vision.FilesetResolver.forVisionTasks(WASM);
+  return withDelegate((delegate) =>
+    vision.PoseLandmarker.createFromOptions(fileset, { baseOptions: { modelAssetPath: POSE, delegate }, ...POSE_OPTIONS }),
+  );
 }
 
 export async function loadVision(): Promise<VisionModels> {
@@ -33,12 +51,7 @@ export async function loadVision(): Promise<VisionModels> {
   const pose = await withDelegate((delegate) =>
     vision.PoseLandmarker.createFromOptions(fileset, {
       baseOptions: { ...base, modelAssetPath: POSE, delegate },
-      runningMode: "VIDEO",
-      numPoses: 3,
-      // Fewer "ghost" people in cluttered aisles, and earlier re-detection when hands move fast.
-      minPoseDetectionConfidence: 0.6,
-      minPosePresenceConfidence: 0.6,
-      minTrackingConfidence: 0.65,
+      ...POSE_OPTIONS,
     }),
   );
   const face = await withDelegate((delegate) =>
