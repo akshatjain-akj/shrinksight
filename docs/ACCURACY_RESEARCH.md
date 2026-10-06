@@ -36,6 +36,6 @@ measured with the evaluation harness (`eval/run.py --repeat 3`) before and after
 
 | Recommendation | Reason |
 |---|---|
-| 1 frame-per-second sampling | Too slow for sub-second scans (the note itself says a sweep takes < 600 ms). We sample 5 fps (3 fps above 10 s). |
+| 1 frame-per-second sampling | Too slow for sub-second scans (the note itself says a sweep takes < 600 ms). We sample 8 fps up to 6 s, 5 fps up to 10 s, 3 fps above; a model that rejects other video settings still gets the fps. |
 | Quota figures in the note (e.g. 1,500 requests/day for Flash) | Don't match our key: Flash has 20/day, Flash Lite 500/day. Our design uses Flash Lite plus a separate inventory model. |
 | Quoted gains ("24% less drift", "65% fewer tokens") | Not measured by us; we only quote numbers from our own eval |

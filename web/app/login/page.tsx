@@ -315,12 +315,10 @@ export default function LoginPage() {
       </section>
 
       <section className="login-panel">
-        <div className="login-logo" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="28" height="28">
-            <path d="M6 16c4-7 16-7 20 0-4 7-16 7-20 0z" fill="none" stroke="#2f6bff" strokeWidth="2" />
-            <circle cx="16" cy="16" r="3.2" fill="#2f6bff" />
-          </svg>
-        </div>
+        <Link href="/" className="login-back">
+          ← Back
+        </Link>
+        <img className="login-logo" src="/logo.svg" alt="" width={72} height={72} />
         <h1>{title}</h1>
         <p className="login-lede">{lede}</p>
 
@@ -428,9 +426,6 @@ export default function LoginPage() {
               Back to login
             </button>
           )}
-        </p>
-        <p className="login-home">
-          <Link href="/">Back to overview</Link>
         </p>
       </section>
     </div>

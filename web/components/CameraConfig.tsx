@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
+  cloudSyncEnabled,
   DEFAULT_DETECTION,
   loadCameraConfigs,
   saveCameraConfig,
@@ -41,6 +42,7 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
   const [busy, setBusy] = useState<"add" | "delete" | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const cloudSync = cloudSyncEnabled();
 
   const camera = cameras.find((item) => item.id === cameraId) ?? cameras[0];
   const zones = store && camera ? store.zones.filter((zone) => camera.zone_ids.includes(zone.id)) : [];
@@ -73,7 +75,26 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     setTouched(savedZoneIds(camera.id));
     setSaved(false);
     setEditing(true);
-  }, [camera, store, synced]);
+    if (!cloudSync) return;
+    let cancel = false;
+    api
+      .cameraPrefs(camera.id)
+      .then((prefs) => {
+        if (cancel) return;
+        setDetection({
+          person: prefs.person,
+          concealment: prefs.concealment,
+          loitering: prefs.loitering,
+          loiterSeconds: prefs.loiter_seconds,
+          shelfReach: prefs.shelf_reach,
+          healthHazard: prefs.health_hazard,
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [camera, store, synced, cloudSync]);
 
   const points = zone ? polygons[zone.id] ?? [] : [];
 
@@ -100,14 +121,26 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
     const current = loadCameraConfigs()[camera.id];
     const placed = Object.fromEntries(Object.entries(polygons).filter(([id]) => touched.includes(id)));
     saveCameraConfig(camera.id, { ...current, detection, polygons: placed });
+    if (!cloudSync) {
+      setSaved(true);
+      return;
+    }
     try {
+      await api.saveCameraPrefs(camera.id, {
+        person: detection.person,
+        concealment: detection.concealment,
+        loitering: detection.loitering,
+        loiter_seconds: detection.loiterSeconds,
+        shelf_reach: detection.shelfReach,
+        health_hazard: detection.healthHazard,
+      });
       const shapes = zones
         .filter((item) => touched.includes(item.id))
         .map((item) => ({ id: item.id, name: item.name, kind: item.kind, polygon: polygons[item.id] ?? [] }));
       await saveLayoutForEveryone(camera.id, shapes, current?.descriptions ?? {});
       setSaved(true);
     } catch (e) {
-      setSaveError(`Saved on this browser only: ${(e as Error).message}`);
+      setSaveError(`Kept on this browser. Firestore did not take it: ${(e as Error).message}`);
     }
   };
 
@@ -358,7 +391,11 @@ export default function CameraConfig({ initialCameraId }: { initialCameraId?: st
           <button type="button" className="btn btn-primary" onClick={save}>
             Save configuration
           </button>
-          {saved && <p className="hint">Saved for everyone using this camera.</p>}
+          {saved && (
+            <p className="hint">
+              {cloudSync ? "Saved to Firestore." : "Saved on this browser only."}
+            </p>
+          )}
           {saveError && <ErrorNotice>{saveError}</ErrorNotice>}
         </aside>
       </div>

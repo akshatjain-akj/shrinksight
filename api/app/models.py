@@ -34,9 +34,6 @@ REVIEW_REASON_TEXT = {
     "other": "other",
 }
 IncidentOrigin = Literal["edge", "upload"]
-# Investigate's optional on-device Tier-1 screening: "flagged" = its gate opened; "cleared" = it didn't and staff
-# sent the clip anyway.
-Tier1Screen = Literal["flagged", "cleared"]
 
 POSITIVE_VERDICTS = {"SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH"}
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -238,8 +235,6 @@ class Incident(BaseModel):
     origin: IncidentOrigin | None = None
     # The edge gate's smoothed score when it sent this clip
     edge_confidence: float | None = None
-    # Set when Investigate screened the upload with Tier-1 first
-    tier1_screen: Tier1Screen | None = None
     usage: TokenUsage | None = None
     inventory_usage: TokenUsage | None = None
     memory_used: list[MemoryRef] = []
@@ -309,6 +304,18 @@ class CameraLayout(BaseModel):
     camera_id: str
     zones: list[ZoneHint] = Field(default_factory=list, max_length=8)
     updated_at: str
+
+
+class CameraPrefs(BaseModel):
+    """Detection switches for one camera. Optional cloud copy of what the browser otherwise keeps locally."""
+
+    camera_id: str
+    person: bool = True
+    concealment: bool = True
+    loitering: bool = True
+    loiter_seconds: int = Field(default=30, ge=10, le=120)
+    shelf_reach: bool = True
+    health_hazard: bool = True
 
 
 class ZoneSuggestion(BaseModel):

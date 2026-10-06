@@ -55,7 +55,7 @@ the agent's visible investigation steps are what separate us, so the video must 
 - **All Gemini work runs inside the request, and progress streams back over SSE.** Cloud Run throttles CPU after the
   response is sent, so there's no "fire and forget" background work. Stateless, and no Pub/Sub needed.
 - **Clips are sent inline** (kept under ~3 MB), so the Files API isn't needed.
-- **We set the video sampling rate** (~5 fps around the event) and use low media resolution, so a quick swipe past
+- **We set the video sampling rate** (8 fps for short clips, 5 fps up to 10 s, 3 fps above) and use low media resolution, so a quick swipe past
   the scanner isn't missed and tokens stay low.
 - **Fallback if Gemini can't count items reliably:** Tier 1 marks each hand-crossing moment, and Gemini gets one
   targeted question per item crossing ("was this item scanned?").

@@ -55,6 +55,9 @@ class Settings:
     # because inline data is base64-encoded and requests have a total size limit.
     inline_clip_bytes: int = 14 * 1024 * 1024
     clip_fps: int = 5
+    # Short clips are cheap, so they get one frame every 125 ms (the live recorder's own 8 fps; more adds nothing)
+    short_clip_seconds: float = 6
+    short_clip_fps: int = 8
     # Longer clips are sampled a little less densely to keep Gemini's processing time down
     long_clip_seconds: float = 10
     long_clip_fps: int = 3

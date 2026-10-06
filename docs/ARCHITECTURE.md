@@ -97,23 +97,6 @@ erDiagram
   floor counterpart of the receipt check. Carrying an item openly is BENIGN unless it crosses a marked exit zone.
 - **Send log** on Live edge: trigger, verdict, reason, incident link and a download of exactly what Gemini received.
 
-## Built Tier-1 screening on Investigate
-
-An optional checkbox on Investigate (off by default, remembered per browser) runs the two tiers on one uploaded clip:
-
-- **Scan on the device** (`web/lib/tier1/scanClip.ts`, `screen.ts`): the clip is stepped through every 100 ms of clip
-  time (faster than real time where the laptop allows) with MediaPipe pose, the same person tracker, rule engines and
-  the camera's auto-tuned gate as Live edge. Each pose sample is ticked three times, so "hot frames" mean what they
-  mean live (~30 ticks a second). Pose landmarks → people is shared with Live edge (`web/lib/tier1/people.ts`).
-- **Gate opens:** the whole clip goes to Gemini as usual, plus the Tier-1 hints (already clip-relative), hand close-ups
-  from the original video at the reach and the possible hide, and `tier1_screen: "flagged"`. The incident shows
-  "Screened by Tier-1".
-- **Gate stays shut:** Gemini is not called and no incident is created. A card shows what Tier-1 saw (person in view,
-  weaker signals, highest score vs the gate) with **Send to Gemini anyway**, which sends the clip with those signals as
-  hints and `tier1_screen: "cleared"`.
-- If the clip can't be scanned (no readable length, models fail to load), Gemini checks it directly and a note says so.
-  The screening state is part of the cache key, so "send anyway" is never answered from a screened run's cache.
-
 ## Built feedback loops
 
 Two loops make ShrinkSight better at a store's own normal behaviour, with no retraining and no extra Gemini requests.
@@ -396,7 +379,7 @@ sequenceDiagram
     K-->>G: miss
     G->>A: start investigation
     A-->>UI: SSE "Watching clip…"
-    A->>GM: clip (fps≈5, low res) + system prompt + tool declarations
+    A->>GM: clip (3–8 fps by length, low res) + system prompt + tool declarations
     GM-->>A: function_call get_pos_transaction(lane=3, window)
     A->>FS: read pos_transactions
     FS-->>A: receipt: 4 line items (SKUs, times)

@@ -4,6 +4,7 @@ import type {
   AskAnswer,
   CameraLayout,
   Camera,
+  CameraPrefs,
   ConfirmReason,
   DismissReason,
   EdgeConfig,
@@ -92,6 +93,17 @@ export const api = {
     request<{ camera: Camera; zones: Zone[] }>("/api/cameras", { method: "POST", body: JSON.stringify(body) }),
   deleteCamera: (cameraId: string) =>
     request<{ deleted: string }>(`/api/cameras/${encodeURIComponent(cameraId)}`, { method: "DELETE" }),
+  createZone: (body: { name: string; camera_id: string; kind: Zone["kind"]; high_value: boolean }) =>
+    request<Zone>("/api/zones", { method: "POST", body: JSON.stringify(body) }),
+  deleteZone: (zoneId: string) =>
+    request<{ deleted: string }>(`/api/zones/${encodeURIComponent(zoneId)}`, { method: "DELETE" }),
+  cameraPrefs: (cameraId: string) =>
+    request<CameraPrefs>(`/api/cameras/${encodeURIComponent(cameraId)}/prefs`),
+  saveCameraPrefs: (cameraId: string, body: Omit<CameraPrefs, "camera_id">) =>
+    request<CameraPrefs>(`/api/cameras/${encodeURIComponent(cameraId)}/prefs`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   users: () => request<RosterPerson[]>("/api/users"),
   setUserRole: (userId: string, role: RosterPerson["role"]) =>
     request<RosterPerson>(`/api/users/${encodeURIComponent(userId)}`, {
@@ -218,8 +230,6 @@ export interface InvestigateMeta {
   /** "none" skips the camera's saved scanner photo for this clip. */
   scanner_photo?: "saved" | "none";
   inventory_usage?: TokenUsage;
-  /** Set when Investigate screened the clip with Tier-1 first ("cleared" = sent anyway). */
-  tier1_screen?: "flagged" | "cleared";
   tier1_events?: {
     t: string;
     kind: string;

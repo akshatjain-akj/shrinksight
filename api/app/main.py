@@ -23,13 +23,13 @@ from .models import (
     POSITIVE_VERDICTS,
     Camera,
     CameraLayout,
+    CameraPrefs,
     ConfirmReason,
     DismissReason,
     InventoryItem,
     ReceiptLine,
     Rule,
     RuleSpec,
-    Tier1Screen,
     TokenUsage,
     Transaction,
     UserAccount,
@@ -252,6 +252,45 @@ def create_camera(body: CameraIn, request: Request) -> dict:
     return {"camera": camera.model_dump(), "zones": [z.model_dump() for z in zones]}
 
 
+class ZoneIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    camera_id: str = Field(min_length=2, max_length=40)
+    kind: Literal["pickup", "scanner", "bagging", "shelf", "exit"]
+    high_value: bool = False
+
+
+@app.post("/api/zones", status_code=201)
+def create_zone(body: ZoneIn, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera = _camera_or_404(repo, body.camera_id)
+    zone = Zone(
+        id=f"z-{uuid.uuid4().hex[:8]}",
+        name=body.name.strip(),
+        camera_id=camera.id,
+        kind=body.kind,
+        high_value=body.high_value,
+    )
+    camera.zone_ids = [*camera.zone_ids, zone.id]
+    repo.save_zone(zone)
+    repo.save_camera(camera)
+    return zone.model_dump()
+
+
+@app.delete("/api/zones/{zone_id}")
+def remove_zone(zone_id: str, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    zone = next((item for item in repo.zones() if item.id == zone_id), None)
+    if zone is None:
+        raise HTTPException(404, "Zone not found")
+    used = [rule.spec.summary for rule in repo.rules() if rule.enabled and rule.spec.zone_id == zone_id]
+    if used:
+        raise HTTPException(400, f"A rule still uses {zone.name}. Turn that rule off or point it somewhere else first.")
+    repo.delete_zone(zone.id)
+    return {"deleted": zone.id}
+
+
 @app.delete("/api/cameras/{camera_id}")
 def remove_camera(camera_id: str, request: Request) -> dict:
     require_manager(request)
@@ -340,6 +379,35 @@ def save_layout(camera_id: str, body: LayoutIn, request: Request) -> dict:
     layout = CameraLayout(camera_id=camera.id, zones=body.zones, updated_at=_now_iso())
     repo.save_layout(layout)
     return layout.model_dump()
+
+
+class CameraPrefsIn(BaseModel):
+    person: bool = True
+    concealment: bool = True
+    loitering: bool = True
+    loiter_seconds: int = Field(default=30, ge=10, le=120)
+    shelf_reach: bool = True
+    health_hazard: bool = True
+
+
+@app.get("/api/cameras/{camera_id}/prefs")
+def camera_prefs(camera_id: str) -> dict:
+    repo = get_repo()
+    _camera_or_404(repo, camera_id)
+    prefs = repo.get_camera_prefs(camera_id)
+    if prefs is None:
+        raise HTTPException(404, "No saved detection settings for this camera")
+    return prefs.model_dump()
+
+
+@app.put("/api/cameras/{camera_id}/prefs")
+def save_camera_prefs(camera_id: str, body: CameraPrefsIn, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    prefs = CameraPrefs(camera_id=camera.id, **body.model_dump())
+    repo.save_camera_prefs(prefs)
+    return prefs.model_dump()
 
 
 IMAGE_MIME = {"image/jpeg": "image/jpeg", "image/png": "image/png"}
@@ -663,8 +731,6 @@ class InvestigateMeta(BaseModel):
     scanner_photo: Literal["saved", "none"] = "saved"
     # Tokens the item-pile inventory call used (shown on the incident for monitoring)
     inventory_usage: TokenUsage | None = None
-    # Investigate's on-device Tier-1 screening result, when it ran ("cleared" = sent anyway)
-    tier1_screen: Tier1Screen | None = None
 
 
 def enforce_app_check(request: Request) -> None:
@@ -815,7 +881,6 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             origin=meta.origin,
             edge_confidence=edge_confidence,
             inventory_usage=meta.inventory_usage,
-            tier1_screen=meta.tier1_screen,
         ):
             if event["type"] == "result" and meta.origin == "edge" and not event.get("cached"):
                 _retune(repo, camera.id)

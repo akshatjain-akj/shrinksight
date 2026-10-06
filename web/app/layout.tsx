@@ -8,6 +8,7 @@ export const metadata: Metadata = {
   title: "ShrinkSight · Sees what the till missed",
   description:
     "AI loss prevention for retail: on-device detection plus a Gemini agent that investigates every alert and rejects false alarms.",
+  icons: { icon: "/logo.svg" },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

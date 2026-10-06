@@ -364,26 +364,44 @@ def _briefing(
     return "\n\n".join(parts)
 
 
+def clip_fps(settings: Settings, clip_seconds: float | None) -> int:
+    """Frames per second Gemini samples: denser for short clips, sparser for long ones, middle if unknown."""
+    if clip_seconds is None:
+        return settings.clip_fps
+    if clip_seconds <= settings.short_clip_seconds:
+        return settings.short_clip_fps
+    if clip_seconds > settings.long_clip_seconds:
+        return settings.long_clip_fps
+    return settings.clip_fps
+
+
 def _ms(since: float) -> int:
     return round((time.monotonic() - since) * 1000)
 
 
+# How much of the video settings a call sends. A 400 steps down one level at a time, so a model that only rejects
+# media resolution or thinking still gets the fps (at the default 1 fps a sub-second sweep can fall between frames).
+FULL, FPS_ONLY, PLAIN = 0, 1, 2
+RETRY_LABELS = {FPS_ONLY: "Retrying the clip with only the frame rate set",
+                PLAIN: "Retrying the clip without video settings"}
+
+
 def _watch(gateway: Gateway, models: list[str], contents_for, config_for, deadline: float):
-    """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, plain)."""
+    """One Gemini call with backup models. A generator so it can stream progress; returns (result, model, level)."""
     for index, model in enumerate(models):
-        plain = False
+        level = FULL
         while True:
             try:
                 # The main call may use all the time left: a slow answer beats abandoning it.
                 result = gateway.generate(
-                    model, contents_for(plain), config_for(model, plain), deadline=deadline, retries=1
+                    model, contents_for(level), config_for(model, level), deadline=deadline, retries=1
                 )
-                return result, model, plain
+                return result, model, level
             except GeminiUnavailable as exc:
-                if exc.code == 400 and not plain:
+                if exc.code == 400 and level < PLAIN:
                     # Some models reject fps / media resolution / thinking settings on a browser WebM.
-                    plain = True
-                    yield _progress("watching", "Retrying the clip without video settings")
+                    level += 1
+                    yield _progress("watching", RETRY_LABELS[level])
                     continue
                 has_backup = index < len(models) - 1
                 if exc.code in FALLBACK_CODES and has_backup and seconds_left(deadline) >= BACKUP_MIN_SECONDS:
@@ -431,7 +449,6 @@ def investigate(
     origin: str | None = None,
     edge_confidence: float | None = None,
     inventory_usage: TokenUsage | None = None,
-    tier1_screen: str | None = None,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event.
 
@@ -442,13 +459,12 @@ def investigate(
     deadline = started + settings.agent_deadline_s
     models = model_chain(settings.investigator_model, settings.fallback_models)
     zones = zones or []
-    long_clip = clip_seconds is not None and clip_seconds > settings.long_clip_seconds
-    fps = settings.long_clip_fps if long_clip else settings.clip_fps
+    fps = clip_fps(settings, clip_seconds)
     confirmed = inventory or []
     remembered = camera_memory.pick(memory or [], settings.memory_examples)
     photo_hash = hashlib.sha256(scanner_photo).hexdigest()[:16] if scanner_photo else ""
     variant = f"{settings.investigator_model}@{fps}fps|" + json.dumps(
-        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash, tier1_screen]
+        [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash]
     )
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
@@ -493,22 +509,26 @@ def investigate(
             source = {"file_data": types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type)}
         else:
             source = {"inline_data": types.Blob(data=clip, mime_type=mime)}
-        plain_video = types.Part(**source)
-        video = types.Part(
-            **source,
-            video_metadata=types.VideoMetadata(fps=fps),
-            media_resolution=_resolution(types, "LOW", plain=False),
-        )
+        clip_parts = {
+            FULL: types.Part(
+                **source,
+                video_metadata=types.VideoMetadata(fps=fps),
+                media_resolution=_resolution(types, "LOW", plain=False),
+            ),
+            FPS_ONLY: types.Part(**source, video_metadata=types.VideoMetadata(fps=fps)),
+            PLAIN: types.Part(**source),
+        }
         timings["upload_ms"] = _ms(step)
 
         briefing = _briefing(context, receipt, tool_results, camera, confirmed, camera_memory.memory_text(remembered))
 
-        def contents_for(plain: bool) -> list:
-            clip_part = plain_video if plain else video
-            stills_part = marked_plain if plain else marked
-            return [types.Content(role="user", parts=[*stills_part, clip_part, types.Part.from_text(text=briefing)])]
+        def contents_for(level: int) -> list:
+            stills_part = marked if level == FULL else marked_plain
+            parts = [*stills_part, clip_parts[level], types.Part.from_text(text=briefing)]
+            return [types.Content(role="user", parts=parts)]
 
-        def config_for(model: str, plain: bool):
+        def config_for(model: str, level: int):
+            plain = level != FULL
             return types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 response_mime_type="application/json",
@@ -523,7 +543,7 @@ def investigate(
         step = time.monotonic()
         stage = "watching the clip"
         yield _progress("watching", "Watching the clip and the marked stills" if marked else "Watching the clip")
-        result, model, plain = yield from _watch(gateway, models, contents_for, config_for, deadline)
+        result, model, level = yield from _watch(gateway, models, contents_for, config_for, deadline)
         timings["watch_ms"] = _ms(step)
         usage = add_usage({}, result.usage)
         first, hard, soft, json_error = _parse(result.text, receipt, confirmed)
@@ -542,12 +562,12 @@ def investigate(
                  "Your answer doesn't add up:\n- ") + "\n- ".join(hard + soft)
                 + "\nWatch again and return corrected JSON only."
             )
-            follow_up = contents_for(plain)
+            follow_up = contents_for(level)
             if result.content is not None:
                 follow_up.append(result.content)
             follow_up.append(types.Content(role="user", parts=[types.Part.from_text(text=problem)]))
             try:
-                again = gateway.generate(model, follow_up, config_for(model, plain), deadline=deadline, retries=0)
+                again = gateway.generate(model, follow_up, config_for(model, level), deadline=deadline, retries=0)
                 usage = add_usage(usage, again.usage)
                 second, hard2, _, _ = _parse(again.text, receipt, confirmed)
                 if second is not None and (not hard2 or chosen is None or chosen_hard):
@@ -587,7 +607,6 @@ def investigate(
         incident.zones_used = zones
         incident.origin = origin
         incident.edge_confidence = edge_confidence
-        incident.tier1_screen = tier1_screen
         incident.usage = TokenUsage(**usage) if usage else None
         incident.inventory_usage = inventory_usage
         incident.memory_used = camera_memory.refs(remembered)

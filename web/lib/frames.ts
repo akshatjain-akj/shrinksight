@@ -17,7 +17,7 @@ function once(target: EventTarget, event: string, timeoutMs = 8000): Promise<voi
   });
 }
 
-export async function openVideo(url: string): Promise<HTMLVideoElement> {
+async function openVideo(url: string): Promise<HTMLVideoElement> {
   const video = document.createElement("video");
   video.muted = true;
   video.playsInline = true;
@@ -34,7 +34,7 @@ export async function openVideo(url: string): Promise<HTMLVideoElement> {
   return video;
 }
 
-export async function seek(video: HTMLVideoElement, t: number): Promise<void> {
+async function seek(video: HTMLVideoElement, t: number): Promise<void> {
   if (Math.abs(video.currentTime - t) < 0.01) return;
   video.currentTime = t;
   await once(video, "seeked");

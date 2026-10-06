@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { useEffect, useSyncExternalStore } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import NavBar from "@/components/NavBar";
+import SiteFooter from "@/components/SiteFooter";
 import { emptySession, readSession, subscribeSession } from "@/lib/session";
 
 const OPEN = new Set(["/", "/login", "/about"]);
@@ -40,9 +41,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <main id="main" className="page">
         {children}
       </main>
-      <footer className="footer">
-        ShrinkSight · Google Cloud AI Builder Cup 2026 · Retail &amp; Commerce · All store data is synthetic.
-      </footer>
+      <SiteFooter />
     </>
   );
 }

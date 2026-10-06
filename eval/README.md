@@ -15,7 +15,7 @@ Edit `manifest.json`. One entry per video file:
 | `expected.verdict` | `BENIGN` if everything was paid for, `SCAN_AVOIDANCE` / `CONCEALMENT` otherwise |
 | `expected.unscanned` | Items handled but **not** on the receipt |
 | `inventory` (optional) | The items really in the pile, e.g. `["bottle", "flat cloth flower", "black biscuit packet"]`. Runs as if this list was confirmed in the browser, so you can measure tracking separately from discovery |
-| `seconds` (optional) | Clip length; clips over 10 s are sampled at 3 fps, as on the website |
+| `seconds` (optional) | Clip length; clips up to 6 s are sampled at 8 fps and clips over 10 s at 3 fps (5 fps between), as on the website |
 | `zones` (optional) | Where the scanner/bagging areas are in this clip. On the Investigate page, mark them and click **Copy zones for eval**, then paste here |
 
 Entries containing `FILL_ME` are skipped until you fill them in.
@@ -25,11 +25,6 @@ On Live edge, every send has a **Download clip** link: that file is exactly what
 small item from the shelf, carry one away in your hand, put one back, take your own phone out and back) into the clips
 folder and add them with `camera_id` `cam-aisle-4` or `cam-aisle-2`, no `receipt`, and the expected verdict
 (`CONCEALMENT` for the pocket, `BENIGN` for the others).
-
-### Tier-1 gate check (by hand, no quota)
-The eval script measures Gemini only. To see how often Tier-1 would miss a theft, open each clip on **Investigate**
-with **Screen with Tier-1 first** ticked and note whether it says *flagged* or *cleared*. A theft clip that is cleared
-is a gate miss; a harmless clip that is cleared is a saved Gemini call. Clearing costs no Gemini quota.
 
 ## 2. Run
 ```bash

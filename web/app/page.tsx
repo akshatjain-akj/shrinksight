@@ -81,10 +81,6 @@ const USES = [
 export default function LandingPage() {
   return (
     <div className="landing">
-      <p className="sec-status" role="status">
-        <span className="sec-dot" aria-hidden="true" />
-        Perimeter watch · Demo Mart · synthetic feed · Gemini standby
-      </p>
       <section className="hero" aria-labelledby="hero-title">
         <div className="hero-copy">
           <p className="eyebrow">AI Builder Cup 2026 · Retail &amp; Commerce · classified demo</p>
@@ -108,7 +104,7 @@ export default function LandingPage() {
             <a href="#architecture" className="btn btn-lg">
               Explore architecture
             </a>
-            <Link href="/edge" className="btn btn-lg">
+            <Link href="/login" className="btn btn-lg">
               Watch the edge
             </Link>
           </div>
@@ -261,10 +257,10 @@ export default function LandingPage() {
           <p>Run a clip through the Gemini agent, or open the live incident monitor.</p>
         </div>
         <div className="row">
-          <Link href="/investigate" className="btn btn-primary btn-lg">
+          <Link href="/login" className="btn btn-primary btn-lg">
             Request a pilot
           </Link>
-          <Link href="/monitor" className="btn btn-lg">
+          <Link href="/login" className="btn btn-lg">
             Open the monitor
           </Link>
         </div>
