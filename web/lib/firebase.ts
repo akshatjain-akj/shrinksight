@@ -1,5 +1,5 @@
 import { getApps, initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import { GoogleAuthProvider, getAuth, signInAnonymously, signInWithPopup } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 // Firebase web config is public by design (it identifies the project, it doesn't grant access).
@@ -24,6 +24,14 @@ export function db() {
 export async function signInAnon(): Promise<string> {
   const cred = await signInAnonymously(getAuth(firebaseApp()));
   return cred.user.uid;
+}
+
+/** Opens the Google account picker and returns a Firebase ID token for the backend to verify. */
+export async function googleIdToken(): Promise<string> {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  const cred = await signInWithPopup(getAuth(firebaseApp()), provider);
+  return cred.user.getIdToken();
 }
 
 let authReady: Promise<string> | null = null;

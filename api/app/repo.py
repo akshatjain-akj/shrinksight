@@ -10,12 +10,15 @@ import time
 from typing import Any, Protocol
 
 from . import seed
-from .models import Camera, CameraLayout, EdgeConfig, Feedback, Incident, Rule, Sku, Transaction, Zone
+from .models import Camera, CameraLayout, EdgeConfig, Feedback, Incident, Rule, Sku, Transaction, UserAccount, Zone
 
 
 class Repo(Protocol):
     def ensure_seeded(self) -> None: ...
     def cameras(self) -> list[Camera]: ...
+    def save_camera(self, camera: Camera) -> None: ...
+    def save_zone(self, zone: Zone) -> None: ...
+    def delete_camera(self, camera_id: str) -> None: ...
     def zones(self) -> list[Zone]: ...
     def skus(self) -> list[Sku]: ...
     def transactions(self, lane_id: str | None = None) -> list[Transaction]: ...
@@ -24,7 +27,12 @@ class Repo(Protocol):
     def incidents(self, limit: int = 50) -> list[Incident]: ...
     def get_incident(self, incident_id: str) -> Incident | None: ...
     def save_incident(self, incident: Incident) -> None: ...
+    def delete_incident(self, incident_id: str) -> None: ...
+    def purge_expired(self) -> int: ...
     def rules(self) -> list[Rule]: ...
+    def get_user_by_email(self, email: str) -> UserAccount | None: ...
+    def users(self) -> list[UserAccount]: ...
+    def save_user(self, user: UserAccount) -> None: ...
     def get_rule(self, rule_id: str) -> Rule | None: ...
     def save_rule(self, rule: Rule) -> None: ...
     def cache_get(self, key: str) -> dict | None: ...
@@ -74,6 +82,7 @@ def _seed_documents() -> dict[str, dict[str, dict]]:
         "incidents": {i.id: i.model_dump() for i in seed.INCIDENTS},
         "rules": {r.id: r.model_dump() for r in seed.RULES},
         "feedback": {f.incident_id: f.model_dump() for f in seed.FEEDBACK},
+        "users": {u.id: u.model_dump() for u in seed.USERS},
     }
 
 
@@ -81,13 +90,22 @@ class MemoryRepo:
     def __init__(self, seeded: bool = True):
         self._data: dict[str, dict[str, dict]] = {}
         self._lock = threading.Lock()
+        self._suppressed: set[tuple[str, str]] = set()
         if seeded:
             self.ensure_seeded()
 
     def ensure_seeded(self) -> None:
         with self._lock:
             for collection, docs in _seed_documents().items():
-                self._data.setdefault(collection, {}).update(docs)
+                bucket = self._data.setdefault(collection, {})
+                for doc_id, doc in docs.items():
+                    if (collection, doc_id) in self._suppressed:
+                        bucket.pop(doc_id, None)
+                        continue
+                    if collection == "users":
+                        bucket.setdefault(doc_id, doc)
+                    else:
+                        bucket[doc_id] = doc
 
     def _all(self, collection: str) -> list[dict]:
         return list(self._data.get(collection, {}).values())
@@ -101,6 +119,25 @@ class MemoryRepo:
 
     def cameras(self) -> list[Camera]:
         return [Camera(**d) for d in self._all("cameras")]
+
+    def save_camera(self, camera: Camera) -> None:
+        self._put("cameras", camera.id, camera.model_dump())
+
+    def save_zone(self, zone: Zone) -> None:
+        self._put("zones", zone.id, zone.model_dump())
+
+    def delete_camera(self, camera_id: str) -> None:
+        with self._lock:
+            camera = self._data.get("cameras", {}).pop(camera_id, None)
+            self._suppressed.add(("cameras", camera_id))
+            zone_ids = set((camera or {}).get("zone_ids") or [])
+            zones = self._data.get("zones", {})
+            for zone_id, zone in list(zones.items()):
+                if zone_id in zone_ids or zone.get("camera_id") == camera_id:
+                    zones.pop(zone_id, None)
+                    self._suppressed.add(("zones", zone_id))
+            self._data.get("layouts", {}).pop(camera_id, None)
+            self._data.get("edge_config", {}).pop(camera_id, None)
 
     def zones(self) -> list[Zone]:
         return [Zone(**d) for d in self._all("zones")]
@@ -121,15 +158,42 @@ class MemoryRepo:
         self._put("transactions", txn.id, txn.model_dump())
 
     def incidents(self, limit: int = 50) -> list[Incident]:
+        self.purge_expired()
         items = sorted(self._all("incidents"), key=lambda d: d["created_at"], reverse=True)
         return [Incident(**d) for d in items[:limit]]
 
     def get_incident(self, incident_id: str) -> Incident | None:
         doc = self._get("incidents", incident_id)
+        if doc and self._drop_if_expired(doc):
+            return None
         return Incident(**doc) if doc else None
 
     def save_incident(self, incident: Incident) -> None:
         self._put("incidents", incident.id, incident.model_dump())
+
+    def delete_incident(self, incident_id: str) -> None:
+        with self._lock:
+            self._data.get("incidents", {}).pop(incident_id, None)
+            feedback = self._data.get("feedback", {})
+            for key, doc in list(feedback.items()):
+                if key == incident_id or doc.get("incident_id") == incident_id:
+                    feedback.pop(key, None)
+
+    def purge_expired(self) -> int:
+        from .retention import is_expired
+
+        gone = [doc["id"] for doc in self._all("incidents") if is_expired(doc)]
+        for incident_id in gone:
+            self.delete_incident(incident_id)
+        return len(gone)
+
+    def _drop_if_expired(self, doc: dict) -> bool:
+        from .retention import is_expired
+
+        if not is_expired(doc):
+            return False
+        self.delete_incident(str(doc.get("id") or ""))
+        return True
 
     def rules(self) -> list[Rule]:
         return sorted((Rule(**d) for d in self._all("rules")), key=lambda r: r.created_at, reverse=True)
@@ -140,6 +204,19 @@ class MemoryRepo:
 
     def save_rule(self, rule: Rule) -> None:
         self._put("rules", rule.id, rule.model_dump())
+
+    def get_user_by_email(self, email: str) -> UserAccount | None:
+        key = email.strip().lower()
+        for doc in self._all("users"):
+            if doc.get("email") == key:
+                return UserAccount(**doc)
+        return None
+
+    def users(self) -> list[UserAccount]:
+        return sorted((UserAccount(**d) for d in self._all("users")), key=lambda u: (u.role != "manager", u.email))
+
+    def save_user(self, user: UserAccount) -> None:
+        self._put("users", user.id, user.model_dump())
 
     def cache_get(self, key: str) -> dict | None:
         return self._get("cache", key)
@@ -229,6 +306,22 @@ class FirestoreRepo:
     def cameras(self) -> list[Camera]:
         return [Camera(**d) for d in self._all("cameras")]
 
+    def save_camera(self, camera: Camera) -> None:
+        self._put("cameras", camera.id, camera.model_dump())
+
+    def save_zone(self, zone: Zone) -> None:
+        self._put("zones", zone.id, zone.model_dump())
+
+    def delete_camera(self, camera_id: str) -> None:
+        camera = self._get("cameras", camera_id) or {}
+        zone_ids = set(camera.get("zone_ids") or [])
+        for zone in self._all("zones"):
+            if zone.get("id") in zone_ids or zone.get("camera_id") == camera_id:
+                self._db.collection("zones").document(zone["id"]).delete()
+        self._db.collection("cameras").document(camera_id).delete()
+        self._db.collection("layouts").document(camera_id).delete()
+        self._db.collection("edge_config").document(camera_id).delete()
+
     def zones(self) -> list[Zone]:
         return [Zone(**d) for d in self._all("zones")]
 
@@ -250,6 +343,7 @@ class FirestoreRepo:
         self._put("transactions", txn.id, txn.model_dump())
 
     def incidents(self, limit: int = 50) -> list[Incident]:
+        self.purge_expired()
         query = (
             self._db.collection("incidents")
             .order_by("created_at", direction=self._fs.Query.DESCENDING)
@@ -259,10 +353,36 @@ class FirestoreRepo:
 
     def get_incident(self, incident_id: str) -> Incident | None:
         doc = self._get("incidents", incident_id)
+        if doc and self._drop_if_expired(doc):
+            return None
         return Incident(**doc) if doc else None
 
     def save_incident(self, incident: Incident) -> None:
         self._put("incidents", incident.id, incident.model_dump())
+
+    def delete_incident(self, incident_id: str) -> None:
+        self._db.collection("incidents").document(incident_id).delete()
+        self._db.collection("feedback").document(incident_id).delete()
+
+    def purge_expired(self) -> int:
+        from .retention import is_expired
+
+        gone = [
+            snap.id
+            for snap in self._db.collection("incidents").stream()
+            if is_expired({**(snap.to_dict() or {}), "id": snap.id})
+        ]
+        for incident_id in gone:
+            self.delete_incident(incident_id)
+        return len(gone)
+
+    def _drop_if_expired(self, doc: dict) -> bool:
+        from .retention import is_expired
+
+        if not is_expired(doc):
+            return False
+        self.delete_incident(str(doc.get("id") or ""))
+        return True
 
     def rules(self) -> list[Rule]:
         return sorted((Rule(**d) for d in self._all("rules")), key=lambda r: r.created_at, reverse=True)
@@ -273,6 +393,18 @@ class FirestoreRepo:
 
     def save_rule(self, rule: Rule) -> None:
         self._put("rules", rule.id, rule.model_dump())
+
+    def get_user_by_email(self, email: str) -> UserAccount | None:
+        key = email.strip().lower()
+        query = self._db.collection("users").where(filter=self._fs.FieldFilter("email", "==", key)).limit(1)
+        found = list(query.stream())
+        return UserAccount(**found[0].to_dict()) if found else None
+
+    def users(self) -> list[UserAccount]:
+        return sorted((UserAccount(**d) for d in self._all("users")), key=lambda u: (u.role != "manager", u.email))
+
+    def save_user(self, user: UserAccount) -> None:
+        self._put("users", user.id, user.model_dump())
 
     def cache_get(self, key: str) -> dict | None:
         return self._get("cache", key)

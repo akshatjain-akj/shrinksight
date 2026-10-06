@@ -21,6 +21,7 @@ from .investigator import investigate, normalise_mime
 from .memory import feedback_from
 from .models import (
     POSITIVE_VERDICTS,
+    Camera,
     CameraLayout,
     ConfirmReason,
     DismissReason,
@@ -30,10 +31,13 @@ from .models import (
     RuleSpec,
     TokenUsage,
     Transaction,
+    UserAccount,
+    Zone,
     ZoneHint,
     validate_rule_spec,
     validate_zone_hints,
 )
+from .profiles import issue_google_session, issue_session, principal_from_header
 from .repo import FirestoreRepo, MemoryRepo, Repo
 from .rules_compiler import compile_rule
 from .seed import STORE_NAME
@@ -46,13 +50,14 @@ app.state.settings = settings
 app.state.repo = None
 app.state.gateway = None
 app.state.clip_signer = None
+app.state.google_verifier = None
 
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
-        allow_headers=["content-type", "x-shrinksight-meta", "x-firebase-appcheck"],
+        allow_headers=["content-type", "authorization", "x-shrinksight-meta", "x-firebase-appcheck"],
     )
 
 
@@ -100,6 +105,72 @@ def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def require_manager(request: Request) -> None:
+    """Rules and camera setup. No-op until the roster, password, and secret are all set."""
+    current = cfg()
+    if not current.profiles_on:
+        return
+    principal = principal_from_header(current, request.headers.get("authorization"), get_repo())
+    if principal is None:
+        raise HTTPException(401, "Sign in required")
+    if principal.role != "manager":
+        raise HTTPException(403, "Manager profile required")
+
+
+class SessionIn(BaseModel):
+    email: str = Field(min_length=3, max_length=120)
+    password: str = Field(min_length=1, max_length=200)
+    remember: bool = False
+
+
+@app.post("/api/session")
+def open_session(body: SessionIn) -> dict:
+    current = cfg()
+    if not current.profiles_on:
+        raise HTTPException(503, "Profiles are not configured")
+    issued = issue_session(current, get_repo(), body.email, body.password, body.remember)
+    if issued is None:
+        raise HTTPException(401, "Email or password is not recognised")
+    return issued
+
+
+class GoogleSessionIn(BaseModel):
+    id_token: str = Field(min_length=20, max_length=4096)
+    remember: bool = False
+
+
+def _verify_firebase_id_token(token: str) -> dict:
+    """Checks signature, expiry, issuer and audience (the Firebase project). Raises ValueError if bad."""
+    from google.auth.exceptions import TransportError
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
+
+    try:
+        return id_token.verify_firebase_token(
+            token, google_requests.Request(), audience=cfg().gcp_project, clock_skew_in_seconds=10
+        )
+    except TransportError as exc:
+        raise HTTPException(503, "Google sign-in is unavailable. Please try again.") from exc
+
+
+@app.post("/api/session/google")
+def open_google_session(body: GoogleSessionIn) -> dict:
+    current = cfg()
+    if not current.profiles_on:
+        raise HTTPException(503, "Profiles are not configured")
+    if not current.gcp_project:
+        raise HTTPException(503, "Google sign-in is not configured")
+    verifier = getattr(app.state, "google_verifier", None) or _verify_firebase_id_token
+    try:
+        claims = verifier(body.id_token)
+    except ValueError as exc:
+        raise HTTPException(401, "Google sign-in could not be verified") from exc
+    issued = issue_google_session(current, get_repo(), claims or {}, body.remember)
+    if issued is None:
+        raise HTTPException(403, "This Google account is not on the store roster")
+    return issued
+
+
 # ---------- health ----------
 @app.get("/api/healthz")
 def healthz() -> dict:
@@ -130,12 +201,79 @@ async def run_selftest() -> dict:
 @app.get("/api/store")
 def store() -> dict:
     repo = get_repo()
-    return {
-        "name": STORE_NAME,
-        "currency": cfg().currency,
-        "cameras": [c.model_dump() for c in repo.cameras()],
-        "zones": [z.model_dump() for z in repo.zones()],
-    }
+    return {"name": STORE_NAME, "currency": cfg().currency, "cameras": [c.model_dump() for c in repo.cameras()],
+            "zones": [z.model_dump() for z in repo.zones()]}
+
+
+class CameraIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    kind: Literal["checkout", "floor"]
+    lane_id: str | None = Field(default=None, max_length=10)
+
+    @model_validator(mode="after")
+    def checkout_needs_lane(self) -> "CameraIn":
+        if self.kind == "checkout" and not (self.lane_id or "").strip():
+            raise ValueError("A checkout camera needs a lane id")
+        return self
+
+
+@app.post("/api/cameras", status_code=201)
+def create_camera(body: CameraIn, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera_id = f"cam-{uuid.uuid4().hex[:8]}"
+    lane = (body.lane_id or "").strip().upper() or None
+    if body.kind == "checkout":
+        specs = (("pickup", "Item pile"), ("scanner", "Scanner"), ("bagging", "Bagging area"))
+    else:
+        specs = (("shelf", "Shelf"),)
+    zones = [
+        Zone(id=f"z-{camera_id}-{kind}", name=f"{label} · {body.name}", camera_id=camera_id, kind=kind)
+        for kind, label in specs
+    ]
+    camera = Camera(id=camera_id, name=body.name.strip(), kind=body.kind, lane_id=lane, zone_ids=[z.id for z in zones])
+    repo.save_camera(camera)
+    for zone in zones:
+        repo.save_zone(zone)
+    return {"camera": camera.model_dump(), "zones": [z.model_dump() for z in zones]}
+
+
+@app.delete("/api/cameras/{camera_id}")
+def remove_camera(camera_id: str, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    repo.delete_camera(camera.id)
+    return {"deleted": camera.id}
+
+
+def _public_user(user: UserAccount) -> dict:
+    return {"id": user.id, "email": user.email, "name": user.name, "role": user.role, "enabled": user.enabled}
+
+
+@app.get("/api/users")
+def list_users(request: Request) -> list[dict]:
+    require_manager(request)
+    return [_public_user(user) for user in get_repo().users()]
+
+
+class RoleIn(BaseModel):
+    role: Literal["manager", "user"]
+
+
+@app.patch("/api/users/{user_id}")
+def set_user_role(user_id: str, body: RoleIn, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    user = next((item for item in repo.users() if item.id == user_id), None)
+    if user is None:
+        raise HTTPException(404, "Person not found")
+    managers = [item for item in repo.users() if item.role == "manager" and item.enabled]
+    if user.role == "manager" and body.role == "user" and len(managers) <= 1:
+        raise HTTPException(400, "The store needs at least one manager")
+    user.role = body.role
+    repo.save_user(user)
+    return _public_user(user)
 
 
 @app.get("/api/transactions")
@@ -178,6 +316,7 @@ class LayoutIn(BaseModel):
 
 @app.put("/api/layouts/{camera_id}")
 def save_layout(camera_id: str, body: LayoutIn, request: Request) -> dict:
+    require_manager(request)
     repo = get_repo()
     camera = _camera_or_404(repo, camera_id)
     problems = validate_zone_hints(body.zones, camera, repo.zones())
@@ -195,6 +334,7 @@ IMAGE_MIME = {"image/jpeg": "image/jpeg", "image/png": "image/png"}
 @app.post("/api/layouts/{camera_id}/suggest")
 async def suggest_layout(camera_id: str, request: Request) -> dict:
     """Body: one JPEG/PNG frame from the camera. Gemini suggests where each zone of this camera is."""
+    require_manager(request)
     enforce_app_check(request)
     mime = IMAGE_MIME.get(request.headers.get("content-type", "").split(";")[0].strip().lower())
     if mime is None:
@@ -237,6 +377,7 @@ def get_scanner_photo(camera_id: str) -> Response:
 @app.put("/api/cameras/{camera_id}/scanner-photo")
 async def put_scanner_photo(camera_id: str, request: Request) -> dict:
     """Body: one JPEG of the scanning device (the browser resizes it to ~640 px). Used for every clip on this camera."""
+    require_manager(request)
     enforce_app_check(request)
     repo = await asyncio.to_thread(get_repo)
     camera = await asyncio.to_thread(_camera_or_404, repo, camera_id)
@@ -248,7 +389,8 @@ async def put_scanner_photo(camera_id: str, request: Request) -> dict:
 
 
 @app.delete("/api/cameras/{camera_id}/scanner-photo")
-def delete_scanner_photo(camera_id: str) -> dict:
+def delete_scanner_photo(camera_id: str, request: Request) -> dict:
+    require_manager(request)
     repo = get_repo()
     camera = _camera_or_404(repo, camera_id)
     repo.delete_scanner_photo(camera.id)
@@ -264,7 +406,8 @@ def edge_config(camera_id: str) -> dict:
 
 
 @app.post("/api/edge-config/{camera_id}/undo")
-def edge_config_undo(camera_id: str) -> dict:
+def edge_config_undo(camera_id: str, request: Request) -> dict:
+    require_manager(request)
     repo = get_repo()
     camera = _camera_or_404(repo, camera_id)
     return edge_tuning.undo(repo, camera.id).model_dump()
@@ -404,6 +547,7 @@ class CompileIn(BaseModel):
 
 @app.post("/api/rules/compile")
 def rules_compile(body: CompileIn, request: Request) -> dict:
+    require_manager(request)
     enforce_app_check(request)
     repo = get_repo()
     enforce_limits(request, repo, "compile", cfg().daily_rule_compiles)
@@ -422,7 +566,8 @@ class RuleIn(BaseModel):
 
 
 @app.post("/api/rules", status_code=201)
-def rules_create(body: RuleIn) -> dict:
+def rules_create(body: RuleIn, request: Request) -> dict:
+    require_manager(request)
     repo = get_repo()
     problems = validate_rule_spec(body.spec, {z.id: z for z in repo.zones()})
     if problems:
@@ -438,7 +583,8 @@ class RulePatch(BaseModel):
 
 
 @app.patch("/api/rules/{rule_id}")
-def rules_patch(rule_id: str, body: RulePatch) -> dict:
+def rules_patch(rule_id: str, body: RulePatch, request: Request) -> dict:
+    require_manager(request)
     repo = get_repo()
     rule = repo.get_rule(rule_id)
     if rule is None:

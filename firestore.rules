@@ -25,7 +25,8 @@ service cloud.firestore {
       allow read: if signedIn();
     }
 
-    // Everything else (transactions, cache, counters, meta, selftest, feedback, scanner_photos) is server-only.
+    // Everything else (users, transactions, cache, counters, meta, selftest, feedback, scanner_photos) is server-only.
+    // users holds password hashes. The browser must never read that collection.
     match /{document=**} {
       allow read, write: if false;
     }

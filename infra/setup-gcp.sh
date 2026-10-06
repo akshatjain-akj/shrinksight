@@ -16,6 +16,7 @@ DEPLOYER="shrinksight-deployer"
 RUNTIME="shrinksight-runtime"
 BUCKET="${PROJECT_ID}-evidence"
 SECRET="gemini-api-key"
+AUTH_SECRET_NAME="auth-secret"
 POOL="github"
 PROVIDER="github-oidc"
 
@@ -90,7 +91,7 @@ gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAc
 gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
   --member "serviceAccount:$RUNTIME_SA" --role roles/iam.serviceAccountTokenCreator >/dev/null
 
-step "6/7 Gemini API key -> Secret Manager '$SECRET'"
+step "6/7 Gemini API key + session key -> Secret Manager"
 if ! exists gcloud secrets describe "$SECRET"; then
   read -rsp "Paste the Gemini API key from the NO-BILLING project (input hidden): " GEMINI_KEY; echo
   [ -n "$GEMINI_KEY" ] || { echo "Empty key, aborting."; exit 1; }
@@ -100,6 +101,15 @@ else
   echo "Secret already exists (to rotate: gcloud secrets versions add $SECRET --data-file=-)"
 fi
 gcloud secrets add-iam-policy-binding "$SECRET" --member "serviceAccount:$RUNTIME_SA" \
+  --role roles/secretmanager.secretAccessor >/dev/null
+
+# Session-signing key for logins. Random, never typed or shown; rotating it signs everyone out.
+if ! exists gcloud secrets describe "$AUTH_SECRET_NAME"; then
+  openssl rand -hex 32 | tr -d '\n' | gcloud secrets create "$AUTH_SECRET_NAME" --replication-policy automatic --data-file=-
+else
+  echo "Secret $AUTH_SECRET_NAME already exists"
+fi
+gcloud secrets add-iam-policy-binding "$AUTH_SECRET_NAME" --member "serviceAccount:$RUNTIME_SA" \
   --role roles/secretmanager.secretAccessor >/dev/null
 
 step "7/7 Keyless GitHub Actions -> Google Cloud trust (Workload Identity Federation)"

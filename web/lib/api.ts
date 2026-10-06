@@ -1,7 +1,9 @@
 import { appCheckToken } from "./firebase";
+import { authHeader, clearSession, readSession, type Session } from "./session";
 import type {
   AskAnswer,
   CameraLayout,
+  Camera,
   ConfirmReason,
   DismissReason,
   EdgeConfig,
@@ -11,9 +13,11 @@ import type {
   ReceiptLine,
   Rule,
   RuleSpec,
+  RosterPerson,
   Store,
   TokenUsage,
   Transaction,
+  Zone,
   ZoneHint,
   ZoneSuggestion,
 } from "./types";
@@ -34,6 +38,8 @@ export class ApiError extends Error {
 }
 
 async function errorFrom(res: Response): Promise<ApiError> {
+  // Token expired or revoked: drop it so AppShell sends the user back to /login.
+  if (res.status === 401 && readSession()) clearSession();
   let message = `Request failed (HTTP ${res.status})`;
   try {
     const body = await res.json();
@@ -51,6 +57,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...authHeader(),
       ...(token ? { "x-firebase-appcheck": token } : {}),
       ...(init?.headers ?? {}),
     },
@@ -59,8 +66,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export async function openSession(email: string, password: string, remember = false): Promise<Session> {
+  const res = await fetch(`${API_BASE}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password, remember }),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json() as Promise<Session>;
+}
+
+export async function openGoogleSession(idToken: string, remember = false): Promise<Session> {
+  const res = await fetch(`${API_BASE}/api/session/google`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id_token: idToken, remember }),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json() as Promise<Session>;
+}
+
 export const api = {
   store: () => request<Store>("/api/store"),
+  createCamera: (body: { name: string; kind: "checkout" | "floor"; lane_id?: string }) =>
+    request<{ camera: Camera; zones: Zone[] }>("/api/cameras", { method: "POST", body: JSON.stringify(body) }),
+  deleteCamera: (cameraId: string) =>
+    request<{ deleted: string }>(`/api/cameras/${encodeURIComponent(cameraId)}`, { method: "DELETE" }),
+  users: () => request<RosterPerson[]>("/api/users"),
+  setUserRole: (userId: string, role: RosterPerson["role"]) =>
+    request<RosterPerson>(`/api/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
   clip: (cameraId: string) =>
     request<{ camera_id: string; url: string; expires_in: number }>(`/api/clips/${encodeURIComponent(cameraId)}`),
   transactions: (laneId: string) => request<Transaction[]>(`/api/transactions?lane_id=${encodeURIComponent(laneId)}`),
@@ -88,7 +125,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/api/cameras/${encodeURIComponent(cameraId)}/scanner-photo`, {
       method: "PUT",
       body: photo,
-      headers: { "content-type": "image/jpeg", ...(token ? { "x-firebase-appcheck": token } : {}) },
+      headers: { "content-type": "image/jpeg", ...authHeader(), ...(token ? { "x-firebase-appcheck": token } : {}) },
     });
     if (!res.ok) throw await errorFrom(res);
     return res.json() as Promise<{ camera_id: string; updated_at: string }>;
@@ -120,6 +157,7 @@ export const api = {
       body: form,
       headers: {
         "x-shrinksight-meta": base64url(JSON.stringify({ camera_id: cameraId })),
+        ...authHeader(),
         ...(token ? { "x-firebase-appcheck": token } : {}),
       },
     });
@@ -138,7 +176,11 @@ export const api = {
     const res = await fetch(`${API_BASE}/api/layouts/${encodeURIComponent(cameraId)}/suggest`, {
       method: "POST",
       body: frame,
-      headers: { "content-type": frame.type || "image/jpeg", ...(token ? { "x-firebase-appcheck": token } : {}) },
+      headers: {
+        "content-type": frame.type || "image/jpeg",
+        ...authHeader(),
+        ...(token ? { "x-firebase-appcheck": token } : {}),
+      },
     });
     if (!res.ok) throw await errorFrom(res);
     return res.json() as Promise<{ camera_id: string; zones: ZoneSuggestion[]; cached: boolean }>;
@@ -223,6 +265,8 @@ export async function investigateStream(
   const xhr = new XMLHttpRequest();
   xhr.open("POST", `${STREAM_BASE}/api/investigate`);
   xhr.setRequestHeader("x-shrinksight-meta", base64url(JSON.stringify(meta)));
+  const sessionHeader = authHeader().authorization;
+  if (sessionHeader) xhr.setRequestHeader("authorization", sessionHeader);
   if (token) xhr.setRequestHeader("x-firebase-appcheck", token);
   let body: XMLHttpRequestBodyInit = clip;
   if (stills.length) {

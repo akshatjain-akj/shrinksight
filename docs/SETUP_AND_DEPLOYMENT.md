@@ -204,9 +204,9 @@ GitHub Pages, Vercel and similar platforms are **not** used (context §2.2).
 - Actions builds the image → tags it with the commit SHA → pushes to **Artifact Registry**
   (`us-central1-docker.pkg.dev/shrinksight-app/shrinksight/api:<sha>`) → runs `gcloud run deploy` with:
   - `--min-instances 0` (no cost when idle) · `--max-instances 2` (hard cost cap) · `--concurrency 20`
-  - `--set-secrets GEMINI_API_KEY=gemini-api-key:latest`: injected at startup from **Secret Manager**,
+  - `--set-secrets GEMINI_API_KEY=gemini-api-key:latest,AUTH_SECRET=auth-secret:latest`: injected at startup from **Secret Manager**,
     never in GitHub or the image
-  - `--service-account api-runtime@…` with minimal permissions (Firestore user, one bucket, one secret)
+  - `--service-account api-runtime@…` with minimal permissions (Firestore user, one bucket, two secrets)
 
 **One URL for everything**
 `firebase.json` has a rewrite: `/api/**` → Cloud Run service `shrinksight-api` (`us-central1`).

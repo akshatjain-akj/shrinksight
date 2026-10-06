@@ -7,6 +7,7 @@ import LiveScan from "@/components/LiveScan";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL } from "@/lib/format";
 import EdgeTuningBanner from "@/components/EdgeTuningBanner";
+import { armAlertSound, playAlertChime } from "@/lib/alertSound";
 import { toTuning, useEdgeConfig, useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useClipUrl } from "@/lib/useClip";
 import type { Camera, Incident, Rule, Zone } from "@/lib/types";
@@ -135,6 +136,23 @@ export default function MonitorPage() {
       filter === "all" || (filter === "review" ? incident.status === "NEEDS_REVIEW" : incident.status === "REJECTED");
     return (incidents ?? []).filter((incident) => byFilter(incident) && (!cameraId || incident.camera_id === cameraId));
   }, [incidents, filter, cameraId]);
+
+  const heard = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    armAlertSound();
+  }, []);
+  useEffect(() => {
+    if (!incidents) return;
+    if (!heard.current) {
+      heard.current = new Set(incidents.map((incident) => incident.id));
+      return;
+    }
+    const fresh = incidents.some(
+      (incident) => incident.status === "NEEDS_REVIEW" && !heard.current?.has(incident.id),
+    );
+    heard.current = new Set(incidents.map((incident) => incident.id));
+    if (fresh) playAlertChime();
+  }, [incidents]);
 
   const waiting = (incidents ?? []).filter((incident) => incident.status === "NEEDS_REVIEW").length;
   const model = incidents?.[0]?.model ?? "Gemini";

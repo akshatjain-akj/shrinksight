@@ -52,7 +52,7 @@ def repo() -> MemoryRepo:
 @pytest.fixture
 def settings() -> Settings:
     return Settings(gemini_api_key="test-key", investigator_model="test-model", gemini_model="test-model",
-                    fallback_models=())
+                    fallback_models=(), auth_secret="")
 
 
 @pytest.fixture

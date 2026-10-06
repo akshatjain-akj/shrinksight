@@ -1,8 +1,25 @@
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # Free-tier friendly default: Flash Lite has the highest daily quota (see docs/PLAN.md).
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+
+def _load_local_env() -> None:
+    """Fill missing env vars from api/.env. Process env wins. The file is gitignored."""
+    path = Path(__file__).resolve().parents[1] / ".env"
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+_load_local_env()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -85,10 +102,18 @@ class Settings:
         default_factory=lambda: _env("APP_CHECK_ENFORCE").lower() in {"1", "true", "yes"}
     )
 
+    # Signs session tokens. Empty leaves profile checks off so tests stay open.
+    # The roster itself lives in the users collection, not in env.
+    auth_secret: str = field(default_factory=lambda: _env("AUTH_SECRET"))
+
     currency: str = "INR"
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(o.strip() for o in _env("CORS_ORIGINS").split(",") if o.strip())
     )
+
+    @property
+    def profiles_on(self) -> bool:
+        return bool(self.auth_secret)
 
 
 def get_settings() -> Settings:

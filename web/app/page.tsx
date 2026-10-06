@@ -102,8 +102,8 @@ export default function LandingPage() {
             <li>Gemini on the clip</li>
           </ul>
           <div className="row">
-            <Link href="/investigate" className="btn btn-primary btn-lg">
-              Request demo
+            <Link href="/login" className="btn btn-primary btn-lg">
+              Sign in
             </Link>
             <a href="#architecture" className="btn btn-lg">
               Explore architecture
@@ -112,7 +112,7 @@ export default function LandingPage() {
               Watch the edge
             </Link>
           </div>
-          <p className="muted small">Opens the live prototype. No login. Synthetic store data only.</p>
+          <p className="muted small">Sign in opens the loss-prevention desk. Synthetic store data only.</p>
         </div>
 
         <figure className="hero-stage">

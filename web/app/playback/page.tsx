@@ -83,10 +83,10 @@ function Timeline({ incident }: { incident: Incident }) {
 export default function PlaybackPage() {
   const { store, error: storeError } = useStore();
   const { data: incidents, error } = useIncidents();
-  const [range, setRange] = useState<Range>("all");
+  const [range, setRange] = useState<Range>("24h");
   const [cameraId, setCameraId] = useState("all");
   const [eventType, setEventType] = useState<EventFilter>("all");
-  const [applied, setApplied] = useState({ range: "all" as Range, cameraId: "all", eventType: "all" as EventFilter });
+  const [applied, setApplied] = useState({ range: "24h" as Range, cameraId: "all", eventType: "all" as EventFilter });
   const [picked, setPicked] = useState<string | null>(null);
   const [scan, setScan] = useState<ScanReading[]>([]);
   const { data: rules } = useRules();
@@ -127,6 +127,9 @@ export default function PlaybackPage() {
         <div>
           <h1>Search & playback</h1>
           <p>Find a reviewed moment by time, camera, and event. The clip itself is not kept after Gemini replies.</p>
+          <p className="playback-retention">
+            False alarms are deleted after 1 day. Real theft and hazards are deleted after 7 days. Seeded demo clips stay.
+          </p>
         </div>
       </div>
 

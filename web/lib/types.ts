@@ -23,6 +23,14 @@ export interface Camera {
   zone_ids: string[];
 }
 
+export interface RosterPerson {
+  id: string;
+  email: string;
+  name: string;
+  role: "manager" | "user";
+  enabled: boolean;
+}
+
 export interface Store {
   name: string;
   currency: string;

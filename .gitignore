@@ -41,3 +41,6 @@ spike-clips/
 .mcp.json
 web/AGENTS.md
 web/CLAUDE.md
+web/login-layout.json
+web/login-layout-2.json
+web/login-layout-3.json
