@@ -8,7 +8,8 @@ ShrinkSight is a two-tier loss-prevention system. On-device vision (MediaPipe, i
 moments. A Gemini agent then investigates each one: it watches the clip, cross-checks it against the till log
 through tool calls, and returns a structured, evidence-backed incident, or rejects the false alarm.
 
-- **Live URL:** https://shrinksight-app.web.app
+- **Live URL:** https://shrinksight-app.web.app — click **Enter the demo store** (no sign-up; you are the manager of
+  the synthetic Demo Mart, with full access)
 
 ### What you can try
 | Page | What it does |
@@ -40,7 +41,9 @@ models take over automatically. Each incident records where the time went.
 other missed scans today?" by looking up incidents, receipts, zone policies and prices, and shows each lookup.
 ## Data flow
 
-A live clip is not stored. Gemini sees a short face-blurred WebM, then only the incident and a cache pointer are kept.
+A live clip is not stored on the server. Gemini sees the clip (from Live edge: a short face-blurred WebM), then only
+the incident and a cache pointer are kept. For replay, your own browser keeps its copy for 24 hours (IndexedDB, on
+your device only; deleted on sign-out, or from Profile).
 
 ```mermaid
 flowchart LR

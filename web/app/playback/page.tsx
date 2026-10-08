@@ -7,6 +7,7 @@ import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL, clipSeconds } from "@/lib/format";
 import { useIncidents, useRules, useStore } from "@/lib/hooks";
 import { CLIP_CAMERA_ID, hasClip, useClipUrl } from "@/lib/useClip";
+import { localClipNote, useLocalClip } from "@/lib/useLocalClip";
 import type { Incident, VerdictKind } from "@/lib/types";
 
 type Range = "24h" | "7d" | "all";
@@ -106,7 +107,10 @@ export default function PlaybackPage() {
     (picked === null ? results.find((incident) => incident.camera_id === CLIP_CAMERA_ID) : undefined) ??
     results[0] ??
     null;
-  const clipUrl = useClipUrl(selected?.camera_id ?? null);
+  const demoClipUrl = useClipUrl(selected?.camera_id ?? null);
+  // This device's own copy of the incident's clip wins over the camera's demo clip.
+  const local = useLocalClip(selected?.id);
+  const clipUrl = local.url ?? demoClipUrl;
 
   useEffect(() => {
     setScan([]);
@@ -207,6 +211,7 @@ export default function PlaybackPage() {
               <div className={`playback-stage camera-${selected.camera_kind}`}>
                 {clipUrl && store && store.cameras.find((item) => item.id === selected.camera_id) && (
                   <LiveScan
+                    key={clipUrl}
                     src={clipUrl}
                     camera={store.cameras.find((item) => item.id === selected.camera_id)!}
                     zones={store.zones}
@@ -215,13 +220,17 @@ export default function PlaybackPage() {
                     onScan={noteScan}
                   />
                 )}
-                {!clipUrl && hasClip(selected.camera_id) && (
+                {!clipUrl && hasClip(selected.camera_id) && !local.url && (
                   <p className="playback-empty">Loading the demo clip…</p>
                 )}
                 {!clipUrl && !hasClip(selected.camera_id) && (
-                  <p className="playback-empty">No stored clip for this camera. Demo videos are on Aisle 4 and Aisle 2.</p>
+                  <p className="playback-empty">
+                    The clip isn’t kept on our servers, and this device has no copy of it. Clips you investigate here
+                    stay on this device for 24 hours. Demo videos are on Aisle 4 and Aisle 2.
+                  </p>
                 )}
               </div>
+              {local.expiresAt && <p className="muted small">{localClipNote(local.expiresAt)}</p>}
               {clipUrl ? (
                 <>
                   <p>{scan.at(-1)?.detail ?? "Scanning this clip…"}</p>

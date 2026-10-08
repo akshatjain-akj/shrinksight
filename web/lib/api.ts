@@ -78,6 +78,25 @@ export async function openSession(email: string, password: string, remember = fa
   return res.json() as Promise<Session>;
 }
 
+/** "Enter the demo store": the server signs in its demo manager; no password ever reaches the browser. */
+export async function openDemoSession(): Promise<Session> {
+  const res = await fetch(`${API_BASE}/api/session/demo`, { method: "POST" });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json() as Promise<Session>;
+}
+
+/** Whether the one-click demo login is switched on (from the cheap health probe). */
+export async function demoLoginOn(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/api/healthz`);
+    if (!res.ok) return true;
+    const body = (await res.json()) as { demo_login?: boolean };
+    return body.demo_login !== false;
+  } catch {
+    return true;
+  }
+}
+
 export async function openGoogleSession(idToken: string, remember = false): Promise<Session> {
   const res = await fetch(`${API_BASE}/api/session/google`, {
     method: "POST",

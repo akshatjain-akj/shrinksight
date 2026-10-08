@@ -453,7 +453,28 @@ gcloud auth application-default login           # once, with the project owner a
 uv run python scripts/clear_test_data.py        # dry run: shows what would be deleted
 uv run python scripts/clear_test_data.py --yes  # deletes it
 ```
-It deletes live incidents, receipts typed on Investigate, the cache pointers to investigations, manager feedback on
-live incidents and every camera's auto-tuned edge gate. It never touches `inc-seed-*`, `TXN-L1-*`/`TXN-L2-*` or seed
-feedback.
+It deletes live incidents, receipts typed on Investigate, the cache pointers to investigations, manager feedback that
+isn't part of the seed, every camera's auto-tuned edge gate, and cameras, zones and rules added on the site (for
+example by judges in the demo store). It never touches `inc-seed-*`, `TXN-L1-*`/`TXN-L2-*`, or seed cameras, zones,
+rules and feedback. Add `--reset-seed` to also restore the seed data as shipped (example incidents un-reviewed, seed
+roles back); the API rewrites it the next time an instance starts (after a deploy, or after scale-to-zero).
+
+## Demo login and daily limits
+- **Enter the demo store** (login page and home page) signs in as the seeded demo manager (`demo@shrinksight.app`)
+  through `POST /api/session/demo`; the password never reaches the browser. The demo account can't be demoted, so
+  nobody can lock the others out. Turn it off with `DEMO_LOGIN=off`.
+- **Daily investigation limit** (`DAILY_INVESTIGATIONS`, default 40 for everyone together). When it, or the free Gemini
+  quota, runs out, the app says so and resets the next day; nothing is charged on a free-tier key.
+
+Both are Cloud Run environment variables. Two ways to change them:
+```bash
+# Right now (new revision in ~30 s; lasts until the next deploy)
+gcloud run services update shrinksight-api --region us-central1 --update-env-vars DAILY_INVESTIGATIONS=80
+
+# Permanently: GitHub repo → Settings → Secrets and variables → Actions → Variables → New variable
+#   DAILY_INVESTIGATIONS = 80      (and/or DEMO_LOGIN = off)
+# The next deploy (push to main) passes it to Cloud Run. Empty or unset = the default.
+```
+Do both if you want the change now and to survive the next deploy: every deploy replaces the service's variables
+with the ones in the workflow.
 

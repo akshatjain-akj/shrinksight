@@ -101,6 +101,17 @@ erDiagram
   a marked exit zone.
 - **Send log** on Live edge: trigger, verdict, reason, incident link and a download of exactly what Gemini received.
 
+## Built demo login and on-device replay
+
+- **Enter the demo store:** `POST /api/session/demo` mints a normal manager session for the seeded demo account, so
+  judges get full access with one click and no shared password. `DEMO_LOGIN=off` hides it; the account can't be
+  demoted. Judges' changes stay until `scripts/clear_test_data.py` (with `--reset-seed` to restore the seed).
+- **On-device replay** (`web/lib/localClips.ts`): when Gemini files an incident, the browser keeps the clip in
+  IndexedDB under the incident id for 24 hours (max ~300 MB / 30 clips, oldest first). Investigate keeps the original
+  file (boxes are mapped back to the full picture, so they line up); Live edge keeps the face-blurred clip it sent.
+  The incident page and Playback play this copy first, then the camera's demo clip. Nothing is uploaded for this;
+  sign-out or Profile → *Delete clips on this device* removes it. Private windows may refuse or drop it on close.
+
 ## Built Tier-1 screening on Investigate
 
 An optional checkbox on Investigate (off by default, remembered per browser) runs Tier-1 on one uploaded clip and

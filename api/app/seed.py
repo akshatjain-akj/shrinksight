@@ -25,9 +25,11 @@ from .models import (
 )
 from .profiles import hash_password
 
-SEED_VERSION = "2026-10-06.manager-role"
+SEED_VERSION = "2026-10-08.demo-login"
 # Shared demo password for the seeded roster. Stored only as a per-user hash.
 SEED_PASSWORD = "ShrinkSight26"
+# The account "Enter the demo store" signs in as (a manager). Judges never see or type its password.
+DEMO_EMAIL = "demo@shrinksight.app"
 STORE_NAME = "Demo Mart (synthetic)"
 
 CAMERAS = [
@@ -252,6 +254,7 @@ USERS = [
     _user("user-akshat", "akshat.gms@gmail.com", "Akshat", "manager"),
     _user("user-avni", "avni.rocks17@gmail.com", "Avni", "manager"),
     _user("user-skcorinva", "skcorinva@gmail.com", "User", "user"),
+    _user("user-demo", DEMO_EMAIL, "Demo manager", "manager"),
 ]
 
 RULES = [

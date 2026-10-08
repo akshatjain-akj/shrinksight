@@ -3119,6 +3119,23 @@ body:has(.login-screen) {
   cursor: pointer;
 }
 .login-submit:hover { background: #7dd3fc; }
+.login-demo {
+  width: min(100%, 360px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0 0 1.25rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #bae6fd;
+  border-radius: 10px;
+  background: #f0f9ff;
+  color: #3a4254;
+  font-size: 0.86rem;
+  text-align: center;
+}
+.login-demo strong { color: #0c4a6e; }
+.login-demo .login-submit { margin-top: 0.3rem; }
+.login-demo .login-error { margin: 0; }
 .login-google {
   width: min(100%, 360px);
   margin-top: 0.75rem;

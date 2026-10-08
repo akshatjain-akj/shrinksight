@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { ApiError, openGoogleSession, openSession } from "@/lib/api";
+import DemoEnter from "@/components/DemoEnter";
 import { googleIdToken } from "@/lib/firebase";
 import { rememberedEmail, saveSession } from "@/lib/session";
 
@@ -321,6 +322,14 @@ export default function LoginPage() {
         <img className="login-logo" src="/logo.svg" alt="" width={72} height={72} />
         <h1>{title}</h1>
         <p className="login-lede">{lede}</p>
+
+        {mode === "login" && (
+          <div className="login-demo">
+            <strong>Judging or just looking?</strong>
+            <span>Open the synthetic Demo Mart as its manager. No account or password needed.</span>
+            <DemoEnter className="login-submit" />
+          </div>
+        )}
 
         <form onSubmit={onSubmit} noValidate>
           {mode === "signup" && (

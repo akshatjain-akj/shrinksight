@@ -108,6 +108,10 @@ class Settings:
     # Signs session tokens. Empty leaves profile checks off so tests stay open.
     # The roster itself lives in the users collection, not in env.
     auth_secret: str = field(default_factory=lambda: _env("AUTH_SECRET"))
+    # One-click "Enter the demo store" on the login page (signs in as the demo manager). DEMO_LOGIN=off hides it.
+    demo_login: bool = field(
+        default_factory=lambda: _env("DEMO_LOGIN", "on").lower() not in ("off", "false", "0", "no")
+    )
 
     currency: str = "INR"
     cors_origins: tuple[str, ...] = field(

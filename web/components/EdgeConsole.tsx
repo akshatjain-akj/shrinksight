@@ -17,6 +17,7 @@ import { PoseSmoother } from "@/lib/tier1/oneEuro.ts";
 import { handRect, pickFour, pickHands, toClipTime, type TimedStill } from "@/lib/tier1/stills.ts";
 import { canvasSegments, ClipBuffer, type Clip } from "@/lib/tier1/clipBuffer.ts";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision.ts";
+import { saveLocalClip } from "@/lib/localClips";
 import type { Camera, VerdictKind } from "@/lib/types";
 import EdgeTuningBanner from "./EdgeTuningBanner";
 import EdgeSendLog, { type SendEntry } from "./EdgeSendLog";
@@ -624,6 +625,8 @@ export default function EdgeConsole() {
             holdScoreRef.current = false;
             const verdict: VerdictKind = event.incident.verdict.verdict;
             if (!event.cached && event.incident.status === "NEEDS_REVIEW") playAlertChime();
+            // Kept on this device only (24 h), so the incident page and Playback can replay what Gemini saw.
+            void saveLocalClip(event.incident.id, clip.blob, camera.id, "edge");
             updateSend(logId, {
               status: "done",
               verdict,

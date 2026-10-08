@@ -2,9 +2,9 @@ import time
 
 from app import profiles
 from app.config import Settings
-from app.main import app
+from app.main import app, get_repo
 from app.profiles import LOGIN_FAILS_MAX, LOGIN_WINDOW_S, REMEMBER_TTL_S, TOKEN_TTL_S
-from app.seed import SEED_PASSWORD
+from app.seed import DEMO_EMAIL, SEED_PASSWORD
 
 
 def _secret() -> Settings:
@@ -94,6 +94,11 @@ def test_manager_can_change_a_role_and_the_last_manager_stays(api):
         + api.post("/api/session", json={"email": "skcorinva@gmail.com", "password": SEED_PASSWORD}).json()["token"]
     }
     assert api.patch(f"/api/users/{avni['id']}", headers=attendant_headers, json={"role": "user"}).status_code == 200
+    # The demo manager always stays, so take it out to test the last-manager rule on its own.
+    repo = get_repo()
+    demo = repo.get_user_by_email(DEMO_EMAIL)
+    demo.enabled = False
+    repo.save_user(demo)
     last = api.patch(f"/api/users/{attendant['id']}", headers=attendant_headers, json={"role": "user"})
     assert last.status_code == 400
 

@@ -45,13 +45,14 @@ from .profiles import (
     LOGIN_FAILS_MAX,
     LOGIN_WINDOW_S,
     failed_login_key,
+    issue_demo_session,
     issue_google_session,
     issue_session,
     principal_from_header,
 )
 from .repo import FirestoreRepo, MemoryRepo, Repo
 from .rules_compiler import compile_rule
-from .seed import STORE_NAME
+from .seed import DEMO_EMAIL, STORE_NAME
 from .zones import suggest_zones
 
 settings = get_settings()
@@ -151,6 +152,20 @@ def open_session(body: SessionIn) -> dict:
     return issued
 
 
+@app.post("/api/session/demo")
+def open_demo_session() -> dict:
+    """"Enter the demo store": signs in as the seeded demo manager, so judges need no account or password."""
+    current = cfg()
+    if not current.profiles_on:
+        raise HTTPException(503, "Profiles are not configured")
+    if not current.demo_login:
+        raise HTTPException(404, "The demo login is switched off")
+    issued = issue_demo_session(current, get_repo(), DEMO_EMAIL)
+    if issued is None:
+        raise HTTPException(503, "The demo account is not available right now")
+    return issued
+
+
 class GoogleSessionIn(BaseModel):
     id_token: str = Field(min_length=20, max_length=4096)
     remember: bool = False
@@ -198,6 +213,7 @@ def healthz() -> dict:
         "version": settings.version,
         "model": settings.gemini_model,
         "investigator_model": settings.investigator_model,
+        "demo_login": cfg().demo_login and cfg().profiles_on,
     }
 
 
@@ -332,6 +348,8 @@ def set_user_role(user_id: str, body: RoleIn, request: Request) -> dict:
     managers = [item for item in repo.users() if item.role == "manager" and item.enabled]
     if user.role == "manager" and body.role == "user" and len(managers) <= 1:
         raise HTTPException(400, "The store needs at least one manager")
+    if user.email == DEMO_EMAIL and body.role != "manager":
+        raise HTTPException(400, "The demo account stays a manager, so everyone can still enter the demo store")
     user.role = body.role
     repo.save_user(user)
     return _public_user(user)

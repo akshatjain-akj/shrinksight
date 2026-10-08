@@ -14,6 +14,7 @@ import ZoneMarker, { markedShapes, type ZoneState } from "@/components/ZoneMarke
 import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
 import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
 import { inr } from "@/lib/format";
+import { keepClipsOn, saveLocalClip } from "@/lib/localClips";
 import { canvasToJpeg, firstFrame, markedStills, numberedPile, pileViews, type Frame, type PileViews } from "@/lib/frames";
 import { shrinkClip } from "@/lib/transcode";
 import { toTuning, useEdgeConfig, useRules, useStore } from "@/lib/hooks";
@@ -47,6 +48,8 @@ export default function InvestigatePage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ incident: Incident; cached: boolean } | null>(null);
+  // This device's copy of the clip for replay: when it will be deleted, or "failed" if the browser refused it.
+  const [keptUntil, setKeptUntil] = useState<number | "failed" | null>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
   const [zoneState, setZoneState] = useState<ZoneState | null>(null);
@@ -358,6 +361,13 @@ export default function InvestigatePage() {
           } else if (event.type === "result") {
             setSteps((prev) => prev.map((s) => ({ ...s, done: true })));
             setResult({ incident: event.incident, cached: event.cached });
+            // The original file (Gemini's boxes are mapped back to the full picture, so they line up with it).
+            setKeptUntil(null);
+            if (keepClipsOn()) {
+              void saveLocalClip(event.incident.id, clip, camera.id, "investigate").then((at) =>
+                setKeptUntil(at ?? "failed"),
+              );
+            }
           } else {
             setError(event.message);
           }
@@ -380,6 +390,7 @@ export default function InvestigatePage() {
 
   const reset = () => {
     setResult(null);
+    setKeptUntil(null);
     setScreened(null);
     setScreenNote(null);
     setSteps([]);
@@ -401,6 +412,17 @@ export default function InvestigatePage() {
             See it in the monitor
           </Link>
           {result.cached && <span className="chip">Cached analysis · no AI quota used</span>}
+          {typeof keptUntil === "number" && (
+            <span className="chip" title="Only in this browser, for replay on the incident page and in Playback">
+              Clip kept on this device until{" "}
+              {new Date(keptUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          )}
+          {keptUntil === "failed" && (
+            <span className="chip" title="The browser refused to store it, as some private windows do">
+              Couldn’t keep a copy on this device
+            </span>
+          )}
         </div>
         <IncidentDetail incident={result.incident} videoUrl={clipUrl ?? undefined} />
       </>

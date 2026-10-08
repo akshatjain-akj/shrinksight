@@ -104,9 +104,10 @@ function AgentSteps({ incident }: { incident: Incident }) {
   );
 }
 
-function Evidence({ incident, videoUrl, focus, videoRef }: {
+function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
   incident: Incident;
   videoUrl?: string;
+  videoNote?: string;
   focus: SeenItem | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
@@ -167,11 +168,17 @@ function Evidence({ incident, videoUrl, focus, videoRef }: {
           Boxes are Gemini’s approximate position, shown around each item’s moment. Click an item to jump to it.
         </p>
       )}
+      {videoUrl && videoNote && <p className="muted small mark-note">{videoNote}</p>}
     </div>
   );
 }
 
-export default function IncidentDetail({ incident, videoUrl }: { incident: Incident; videoUrl?: string }) {
+export default function IncidentDetail({ incident, videoUrl, videoNote }: {
+  incident: Incident;
+  videoUrl?: string;
+  /** Where the clip being played comes from, e.g. this device's kept copy. */
+  videoNote?: string;
+}) {
   const { verdict } = incident;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [focus, setFocus] = useState<SeenItem | null>(
@@ -291,7 +298,7 @@ export default function IncidentDetail({ incident, videoUrl }: { incident: Incid
       <div className="grid-main">
         <div className="card stack">
           <h2>Evidence</h2>
-          <Evidence incident={incident} videoUrl={videoUrl} focus={focus} videoRef={videoRef} />
+          <Evidence incident={incident} videoUrl={videoUrl} videoNote={videoNote} focus={focus} videoRef={videoRef} />
           <blockquote className="reason">{verdict.reason}</blockquote>
           {verdict.similar_past_case && (
             <p className="memory-note small" style={{ margin: 0 }}>

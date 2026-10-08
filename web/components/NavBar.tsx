@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { clearSession, emptySession, readSession, subscribeSession } from "@/lib/session";
+import { clearLocalClips } from "@/lib/localClips";
 
 const LINKS = [
   { href: "/monitor", label: "Monitor" },
@@ -92,6 +93,8 @@ export default function NavBar() {
                 role="menuitem"
                 onClick={() => {
                   clearSession();
+                  // Clips kept on this device go with the session (a shared judge laptop keeps nothing).
+                  void clearLocalClips();
                   router.push("/login");
                 }}
               >

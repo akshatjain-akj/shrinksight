@@ -78,6 +78,14 @@ def issue_google_session(settings: Settings, repo, claims: dict, remember: bool 
     return _mint(settings, user, remember)
 
 
+def issue_demo_session(settings: Settings, repo, email: str) -> dict | None:
+    """The demo store's one-click sign-in: a normal manager session for the seeded demo account, no password."""
+    user = repo.get_user_by_email(email)
+    if user is None or not user.enabled:
+        return None
+    return _mint(settings, user, remember=False)
+
+
 def _mint(settings: Settings, user: UserAccount, remember: bool) -> dict:
     role = user.role
     normalised = user.email
