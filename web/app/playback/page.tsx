@@ -6,7 +6,8 @@ import LiveScan, { type ScanReading } from "@/components/LiveScan";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL, clipSeconds } from "@/lib/format";
 import { useIncidents, useRules, useStore } from "@/lib/hooks";
-import { CLIP_CAMERA_ID, hasClip, useClipUrl } from "@/lib/useClip";
+import { useDemoClipUrl } from "@/lib/useClip";
+import { forDemoMode, useDemoMode } from "@/lib/demoMode";
 import { localClipNote, useLocalClip } from "@/lib/useLocalClip";
 import type { Incident, VerdictKind } from "@/lib/types";
 
@@ -83,7 +84,10 @@ function Timeline({ incident }: { incident: Incident }) {
 
 export default function PlaybackPage() {
   const { store, error: storeError } = useStore();
-  const { data: incidents, error } = useIncidents();
+  const { data: allIncidents, error } = useIncidents();
+  const [demoOn] = useDemoMode();
+  // Demo-clip incidents (one per demo clip) are listed only in demo mode.
+  const incidents = useMemo(() => (allIncidents ? forDemoMode(allIncidents, demoOn) : null), [allIncidents, demoOn]);
   const [range, setRange] = useState<Range>("24h");
   const [cameraId, setCameraId] = useState("all");
   const [eventType, setEventType] = useState<EventFilter>("all");
@@ -95,7 +99,8 @@ export default function PlaybackPage() {
   const results = useMemo(() => {
     const now = Date.now();
     return (incidents ?? []).filter((incident) => {
-      if (!within(incident.created_at, applied.range, now)) return false;
+      // A demo clip's result is its recording, whenever it was analysed.
+      if (incident.source !== "demo" && !within(incident.created_at, applied.range, now)) return false;
       if (applied.cameraId !== "all" && incident.camera_id !== applied.cameraId) return false;
       if (applied.eventType !== "all" && incident.verdict.verdict !== applied.eventType) return false;
       return true;
@@ -104,13 +109,13 @@ export default function PlaybackPage() {
 
   const selected =
     results.find((incident) => incident.id === picked) ??
-    (picked === null ? results.find((incident) => incident.camera_id === CLIP_CAMERA_ID) : undefined) ??
+    (picked === null ? results.find((incident) => incident.source === "demo") : undefined) ??
     results[0] ??
     null;
-  const demoClipUrl = useClipUrl(selected?.camera_id ?? null);
-  // This device's own copy of the incident's clip wins over the camera's demo clip.
-  const local = useLocalClip(selected?.id);
-  const clipUrl = local.url ?? demoClipUrl;
+  // A demo incident plays the clip it was analysed from; any other incident, this device's own copy if it has one.
+  const demoClipUrl = useDemoClipUrl(selected?.clip_ref);
+  const local = useLocalClip(selected?.clip_ref ? null : selected?.id);
+  const clipUrl = demoClipUrl ?? local.url;
 
   useEffect(() => {
     setScan([]);
@@ -220,16 +225,17 @@ export default function PlaybackPage() {
                     onScan={noteScan}
                   />
                 )}
-                {!clipUrl && hasClip(selected.camera_id) && !local.url && (
-                  <p className="playback-empty">Loading the demo clip…</p>
-                )}
-                {!clipUrl && !hasClip(selected.camera_id) && (
+                {!clipUrl && selected.clip_ref && <p className="playback-empty">Loading the demo clip…</p>}
+                {!clipUrl && !selected.clip_ref && (
                   <p className="playback-empty">
                     The clip isn’t kept on our servers, and this device has no copy of it. Clips you investigate here
-                    stay on this device for 24 hours. Demo videos are on Aisle 4 and Aisle 2.
+                    stay on this device for 24 hours; demo clips (demo mode) always play.
                   </p>
                 )}
               </div>
+              {selected.clip_ref && clipUrl && (
+                <p className="muted small">Demo clip · analysed once by Gemini; this is its stored result.</p>
+              )}
               {local.expiresAt && <p className="muted small">{localClipNote(local.expiresAt)}</p>}
               {clipUrl ? (
                 <>

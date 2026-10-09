@@ -476,6 +476,7 @@ def investigate(
     inventory_usage: TokenUsage | None = None,
     tier1_screen: str | None = None,
     tier1_measure: Tier1Measure | None = None,
+    fresh: bool = False,
 ) -> Iterator[dict]:
     """Yields progress events, then exactly one `result` or `error` event.
 
@@ -497,7 +498,8 @@ def investigate(
     )
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
-    cached = repo.cache_get(key)
+    # fresh: analysing a demo clip always asks Gemini again (re-analyse must not return the old answer)
+    cached = None if fresh else repo.cache_get(key)
     if cached and (incident := repo.get_incident(cached["incident_id"])):
         yield _progress("cached", "Found an earlier analysis of this exact clip")
         yield {"type": "result", "incident": incident.model_dump(), "cached": True}

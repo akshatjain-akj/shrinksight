@@ -31,3 +31,14 @@ def test_only_test_data_is_selected_and_seed_data_is_kept():
 def test_missing_collections_are_fine():
     assert select_test_data({}) == {"incidents": [], "transactions": [], "cache": [], "feedback": [],
                                     "edge_config": [], "cameras": [], "zones": [], "rules": []}
+
+
+def test_demo_clip_results_are_kept_unless_asked():
+    docs = {"incidents": {"inc-demo": {"source": "demo"}, "inc-live": {"source": "live"}},
+            "cache": {"demo:demo~floor~a.mp4": {"incident_id": "inc-demo"}, "inv:x": {}}}
+
+    assert select_test_data(docs)["incidents"] == ["inc-live"]
+    assert select_test_data(docs)["cache"] == ["inv:x"]
+    every = select_test_data(docs, include_demo=True)
+    assert every["incidents"] == ["inc-demo", "inc-live"]
+    assert every["cache"] == ["demo:demo~floor~a.mp4", "inv:x"]

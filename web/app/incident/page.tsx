@@ -7,6 +7,7 @@ import IncidentDetail from "@/components/IncidentDetail";
 import { ErrorNotice, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { localClipNote, useLocalClip } from "@/lib/useLocalClip";
+import { useDemoClipUrl } from "@/lib/useClip";
 import type { Incident } from "@/lib/types";
 
 function IncidentLoader() {
@@ -16,6 +17,8 @@ function IncidentLoader() {
   const [attempt, setAttempt] = useState(0);
   // Clips aren't stored on the server; this device may still hold its own copy for 24 hours.
   const local = useLocalClip(id);
+  // A demo clip's result always has its video: the clip it was analysed from.
+  const demoUrl = useDemoClipUrl(incident?.clip_ref);
 
   useEffect(() => {
     if (!id) return;
@@ -32,8 +35,14 @@ function IncidentLoader() {
   return (
     <IncidentDetail
       incident={incident}
-      videoUrl={local.url ?? undefined}
-      videoNote={local.expiresAt ? localClipNote(local.expiresAt) : undefined}
+      videoUrl={demoUrl ?? local.url ?? undefined}
+      videoNote={
+        demoUrl
+          ? "Demo clip · analysed once by Gemini; this is its stored result"
+          : local.expiresAt
+            ? localClipNote(local.expiresAt)
+            : undefined
+      }
     />
   );
 }

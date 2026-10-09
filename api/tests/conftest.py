@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import Settings
+from app.demo import MemoryDemoStore
 from app.gemini import FunctionCall, GenResult
 from app.repo import MemoryRepo
 
@@ -61,9 +62,11 @@ def api(repo, settings):
     main.app.state.repo = repo
     main.app.state.settings = settings
     main.app.state.gateway = FakeGateway([])
+    main.app.state.demo_store = MemoryDemoStore()
     client = TestClient(main.app)
     client.repo = repo
     yield client
     main.app.state.repo = None
     main.app.state.gateway = None
+    main.app.state.demo_store = None
     main.app.state.settings = main.settings

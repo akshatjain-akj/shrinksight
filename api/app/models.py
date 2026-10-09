@@ -104,6 +104,8 @@ class Camera(BaseModel):
     kind: CameraKind
     lane_id: str | None = None
     zone_ids: list[str] = []
+    # Demo mode: the clip in the bucket's demo/ folder this camera plays (assigned when it is created)
+    demo_clip: str | None = None
 
 
 class Sku(BaseModel):
@@ -268,7 +270,10 @@ class Incident(BaseModel):
     unscanned_items: list[UnscannedItem] = []
     est_loss_inr: float = 0
     model: str
-    source: Literal["seed", "live"]
+    # "demo": the analysed result of a demo clip (one per clip, replayed on every Monitor loop, never expires)
+    source: Literal["seed", "live", "demo"]
+    # The demo clip (object under demo/) this incident was analysed from; Playback plays it
+    clip_ref: str | None = None
     latency_ms: int | None = None
     tool_calls: list[ToolCallLog] = []
     reviewed_at: str | None = None

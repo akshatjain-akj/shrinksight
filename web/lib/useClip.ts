@@ -3,41 +3,36 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 
-/** Cameras that have a stored demo clip. Checkout lanes stay as painted scenes. */
-export const CLIP_CAMERAS = ["cam-aisle-4", "cam-aisle-2"] as const;
-export const CLIP_CAMERA_ID = CLIP_CAMERAS[0];
-
-export function hasClip(cameraId: string | null): boolean {
-  return cameraId != null && (CLIP_CAMERAS as readonly string[]).includes(cameraId);
-}
-
-/** Fetches a short-lived signed URL and refreshes it before it expires. */
-export function useClipUrl(cameraId: string | null): string | null {
-  const [url, setUrl] = useState<string | null>(null);
+/** Re-signs a short-lived URL before it expires. `load` returning null means "no clip". */
+function useSigned(key: string | null, load: (key: string) => Promise<string>): string | null {
+  const [found, setFound] = useState<{ key: string; url: string } | null>(null);
 
   useEffect(() => {
-    if (!cameraId || !hasClip(cameraId)) {
-      setUrl(null);
-      return;
-    }
-    const id = cameraId;
+    if (!key) return;
     let cancelled = false;
-    const load = () =>
-      api
-        .clip(id)
-        .then((body) => {
-          if (!cancelled) setUrl(body.url);
-        })
-        .catch(() => {
-          if (!cancelled) setUrl(null);
-        });
-    load();
-    const timer = setInterval(load, 12 * 60 * 1000);
+    const fetchUrl = () =>
+      load(key)
+        .then((url) => !cancelled && setFound({ key, url }))
+        .catch(() => !cancelled && setFound(null));
+    fetchUrl();
+    const timer = setInterval(fetchUrl, 12 * 60 * 1000);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [cameraId]);
+    // load is a stable module-level function per caller
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
-  return url;
+  return found && found.key === key ? found.url : null;
+}
+
+/** The demo clip a camera plays in demo mode (null when off, or when the camera has none). */
+export function useClipUrl(cameraId: string | null, enabled = true): string | null {
+  return useSigned(enabled ? cameraId : null, (id) => api.clip(id).then((body) => body.url));
+}
+
+/** A specific demo clip, e.g. the one a demo incident was analysed from. */
+export function useDemoClipUrl(object: string | null | undefined): string | null {
+  return useSigned(object ?? null, (name) => api.demoClipUrl(name).then((body) => body.url));
 }

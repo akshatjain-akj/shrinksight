@@ -10,8 +10,11 @@ from . import seed
 SEED_INCIDENT_PREFIX = "inc-seed-"
 
 
-def select_test_data(docs: dict[str, dict[str, dict]]) -> dict[str, list[str]]:
-    """docs: {collection: {doc_id: document}}. Returns {collection: [doc ids to delete]}."""
+def select_test_data(docs: dict[str, dict[str, dict]], include_demo: bool = False) -> dict[str, list[str]]:
+    """docs: {collection: {doc_id: document}}. Returns {collection: [doc ids to delete]}.
+
+    Demo-clip results (source "demo") are kept unless include_demo; the clips themselves stay in storage either way.
+    """
     def ids(collection: str, keep) -> list[str]:
         return sorted(doc_id for doc_id, doc in docs.get(collection, {}).items() if not keep(doc_id, doc))
 
@@ -19,10 +22,11 @@ def select_test_data(docs: dict[str, dict[str, dict]]) -> dict[str, list[str]]:
     seed_zones = {z.id for z in seed.ZONES}
     seed_feedback = {f.incident_id for f in seed.FEEDBACK}
     return {
-        "incidents": ids("incidents", lambda i, d: d.get("source") == "seed" or i.startswith(SEED_INCIDENT_PREFIX)),
+        "incidents": ids("incidents", lambda i, d: d.get("source") == "seed" or i.startswith(SEED_INCIDENT_PREFIX)
+                         or (d.get("source") == "demo" and not include_demo)),
         "transactions": ids("transactions", lambda i, d: d.get("source", "seed") == "seed"),
         # Only the "same clip = instant result" pointers; inventory, rule and zone caches are harmless to keep.
-        "cache": ids("cache", lambda i, d: not i.startswith("inv:")),
+        "cache": ids("cache", lambda i, d: not i.startswith("inv:") and not (include_demo and i.startswith("demo:"))),
         # Reviews on seed incidents beyond the seeded ones are test data too; re-seeding restores the seeded ones.
         "feedback": ids("feedback", lambda i, d: i in seed_feedback),
         "edge_config": ids("edge_config", lambda i, d: False),

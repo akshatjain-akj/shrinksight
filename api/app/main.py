@@ -11,10 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from . import edge_tuning, selftest
+from . import demo, edge_tuning, selftest
 from . import memory as camera_memory
 from .agent import ask as ask_agent
-from .clips import SIGNED_URL_MINUTES, object_for, sign_seed_clip
+from .clips import SIGNED_URL_MINUTES, sign_blob, storage_client
 from .config import Settings, get_settings
 from .gemini import Gateway, GeminiGateway, GeminiUnavailable
 from .inventory import take_inventory
@@ -27,6 +27,7 @@ from .models import (
     CameraPrefs,
     ConfirmReason,
     DismissReason,
+    Incident,
     InventoryItem,
     ReceiptLine,
     Rule,
@@ -61,7 +62,7 @@ app = FastAPI(title="ShrinkSight API", docs_url="/api/docs", openapi_url="/api/o
 app.state.settings = settings
 app.state.repo = None
 app.state.gateway = None
-app.state.clip_signer = None
+app.state.demo_store = None
 app.state.google_verifier = None
 
 if settings.cors_origins:
@@ -214,6 +215,7 @@ def healthz() -> dict:
         "model": settings.gemini_model,
         "investigator_model": settings.investigator_model,
         "demo_login": cfg().demo_login and cfg().profiles_on,
+        "demo_clip_uploads": cfg().demo_clip_uploads,
     }
 
 
@@ -234,7 +236,8 @@ async def run_selftest() -> dict:
 @app.get("/api/store")
 def store() -> dict:
     repo = get_repo()
-    return {"name": STORE_NAME, "currency": cfg().currency, "cameras": [c.model_dump() for c in repo.cameras()],
+    cameras = _sync_demo_clips(repo)
+    return {"name": STORE_NAME, "currency": cfg().currency, "cameras": [c.model_dump() for c in cameras],
             "zones": [z.model_dump() for z in repo.zones()]}
 
 
@@ -265,6 +268,11 @@ def create_camera(body: CameraIn, request: Request) -> dict:
         for kind, label in specs
     ]
     camera = Camera(id=camera_id, name=body.name.strip(), kind=body.kind, lane_id=lane, zone_ids=[z.id for z in zones])
+    # Demo mode: the new camera plays the least-used demo clip of its kind
+    try:
+        camera.demo_clip = demo.assign(camera.kind, demo_clips(), repo.cameras())
+    except Exception:
+        camera.demo_clip = None
     repo.save_camera(camera)
     for zone in zones:
         repo.save_zone(zone)
@@ -361,18 +369,268 @@ def transactions(lane_id: str | None = Query(default=None, max_length=10)) -> li
     return [{**t.model_dump(), "total_inr": t.total_inr} for t in txns]
 
 
-# ---------- clips ----------
-@app.get("/api/clips/{camera_id}")
-def clip_url(camera_id: str) -> dict:
-    """A 15-minute HTTPS URL for a demo clip. Unknown cameras have no stored video."""
-    if object_for(camera_id) is None:
-        raise HTTPException(404, "No clip for this camera")
-    signer = getattr(app.state, "clip_signer", None)
+# ---------- demo clips (demo mode) ----------
+_demo_listing = demo.CachedListing()
+
+
+def get_demo_store() -> demo.DemoStore:
+    store = getattr(app.state, "demo_store", None)
+    if store is None:
+        current = cfg()
+        if current.evidence_bucket:
+            store = demo.GcsDemoStore(storage_client(current), current.evidence_bucket, sign_blob)
+        else:
+            store = demo.MemoryDemoStore()
+        app.state.demo_store = store
+    return store
+
+
+def demo_clips() -> list[demo.DemoClip]:
+    return _demo_listing.get(get_demo_store())
+
+
+def _sync_demo_clips(repo: Repo) -> list[Camera]:
+    """Cameras with their demo clip; any camera without one gets one of its kind. The bucket being down never breaks
+    the store."""
+    cameras = repo.cameras()
     try:
-        url = signer(camera_id) if signer else sign_seed_clip(cfg(), camera_id)
+        clips = demo_clips()
+    except Exception:
+        return cameras
+    for camera in demo.fill(cameras, clips):
+        repo.save_camera(camera)
+    return cameras
+
+
+def _result_key(object_name: str) -> str:
+    return demo.RESULT_KEY + object_name.replace("/", "~")  # Firestore ids can't contain "/"
+
+
+def _demo_result(repo: Repo, object_name: str) -> Incident | None:
+    pointer = repo.cache_get(_result_key(object_name))
+    incident_id = (pointer or {}).get("incident_id")
+    return repo.get_incident(incident_id) if incident_id else None
+
+
+def _seconds(t: str | None) -> float | None:
+    try:
+        return sum(float(part) * 60 ** i for i, part in enumerate(reversed(str(t).split(":")))) if t else None
+    except ValueError:
+        return None
+
+
+def _alert_at(incident: Incident) -> float:
+    """The clip moment the Monitor shows the verdict at: the first unpaid or hidden item, else the first event."""
+    v = incident.verdict
+    times = [i.ended_at or i.t for i in v.seen_items if not i.scanned] or [e.t for e in v.timeline]
+    moments = [m for m in (_seconds(t) for t in times) if m is not None]
+    return min(moments) if moments else 0.0
+
+
+def _is_demo_account(request: Request) -> bool:
+    current = cfg()
+    if not current.profiles_on:
+        return False
+    principal = principal_from_header(current, request.headers.get("authorization"), get_repo())
+    return principal is not None and principal.email == DEMO_EMAIL
+
+
+def _uploads_allowed(request: Request) -> bool:
+    return cfg().demo_clip_uploads and not _is_demo_account(request)
+
+
+def _require_demo_uploads(request: Request) -> None:
+    require_manager(request)
+    if not cfg().demo_clip_uploads:
+        raise HTTPException(403, "Saving and deleting demo clips is switched off")
+    if _is_demo_account(request):
+        raise HTTPException(403, "The demo account can't change the demo footage")
+
+
+def _demo_clip_or_404(object_name: str) -> demo.DemoClip:
+    if demo.kind_of(object_name) is None:
+        raise HTTPException(404, "Not a demo clip")
+    try:
+        found = next((c for c in demo_clips() if c.object == object_name), None)
+    except Exception as exc:
+        raise HTTPException(503, "Couldn't read the demo clips") from exc
+    if found is None:
+        raise HTTPException(404, "Demo clip not found")
+    return found
+
+
+def _sign(object_name: str) -> dict:
+    try:
+        url = get_demo_store().sign(object_name, SIGNED_URL_MINUTES)
     except Exception as exc:
         raise HTTPException(503, "Could not sign the clip URL") from exc
-    return {"camera_id": camera_id, "url": url, "expires_in": SIGNED_URL_MINUTES * 60}
+    return {"object": object_name, "url": url, "expires_in": SIGNED_URL_MINUTES * 60}
+
+
+@app.get("/api/demo/clips")
+def list_demo_clips(request: Request) -> dict:
+    """Every demo clip: kind, its .json settings, the cameras playing it and its analysed result (if any)."""
+    repo = get_repo()
+    cameras = _sync_demo_clips(repo)
+    try:
+        clips = demo_clips()
+    except Exception as exc:
+        raise HTTPException(503, "Couldn't read the demo clips") from exc
+    out = []
+    for clip in clips:
+        meta = demo.clean_sidecar(clip.sidecar)
+        result = _demo_result(repo, clip.object)
+        expected = meta.get("expected")
+        out.append({
+            "object": clip.object,
+            "name": clip.name,
+            "kind": clip.kind,
+            "size": clip.size,
+            "updated": clip.updated,
+            "receipt": meta.get("receipt", []),
+            "zones": meta.get("zones", []),
+            "expected": expected,
+            "cameras": [c.id for c in cameras if c.demo_clip == clip.object],
+            "result": {
+                "incident_id": result.id,
+                "verdict": result.verdict.verdict,
+                "confidence": result.verdict.confidence,
+                "status": result.status,
+                "analysed_at": result.created_at,
+                "alert_at": _alert_at(result),
+            } if result else None,
+            "matches": (result.verdict.verdict == expected) if result and expected else None,
+        })
+    return {"clips": out, "uploads": _uploads_allowed(request)}
+
+
+@app.get("/api/demo/url")
+def demo_clip_url(object: str = Query(min_length=8, max_length=200)) -> dict:
+    """A 15-minute HTTPS URL for one demo clip (only objects under demo/ that exist)."""
+    _demo_clip_or_404(object)
+    return _sign(object)
+
+
+@app.get("/api/clips/{camera_id}")
+def clip_url(camera_id: str) -> dict:
+    """A 15-minute HTTPS URL for the demo clip this camera plays in demo mode."""
+    repo = get_repo()
+    camera = next((c for c in _sync_demo_clips(repo) if c.id == camera_id), None)
+    if camera is None or not camera.demo_clip:
+        raise HTTPException(404, "No clip for this camera")
+    return {"camera_id": camera_id, **_sign(camera.demo_clip)}
+
+
+@app.post("/api/demo/clips", status_code=201)
+async def save_demo_clip(request: Request) -> dict:
+    """Multipart: clip (the original file), camera_id (decides checkout / floor), optional receipt and zones (JSON)
+    and expected. Writes the clip and its .json settings under demo/<kind>/. Not for the demo account."""
+    _require_demo_uploads(request)
+    limit = cfg().max_clip_bytes
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit + 256 * 1024:
+        raise HTTPException(413, f"Clip too large (max {limit // (1024 * 1024)} MB)")
+    form = await request.form(max_files=1, max_fields=6)
+    upload = form.get("clip")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(400, "Missing clip")
+    filename = getattr(upload, "filename", "") or "clip.mp4"
+    mime = normalise_mime(getattr(upload, "content_type", "") or "")
+    if mime is None:
+        raise HTTPException(415, "Unsupported video type. Use MP4, WebM or MOV.")
+    data = await upload.read()
+    if not data or len(data) > limit:
+        raise HTTPException(413 if data else 400, "Clip too large" if data else "Empty clip")
+    repo = get_repo()
+    camera = _camera_or_404(repo, str(form.get("camera_id") or ""))
+
+    def parse(field: str) -> object:
+        raw = form.get(field)
+        if not raw:
+            return None
+        try:
+            return json.loads(str(raw))
+        except ValueError as exc:
+            raise HTTPException(400, f"{field} must be JSON") from exc
+
+    sidecar = demo.clean_sidecar({"receipt": parse("receipt"), "zones": parse("zones"),
+                                  "expected": str(form.get("expected") or "")})
+    try:
+        taken = {c.object for c in demo_clips()}
+    except Exception as exc:
+        raise HTTPException(503, "Couldn't read the demo clips") from exc
+    name = demo.object_name(camera.kind, filename)
+    stem, ext = name.rsplit(".", 1)
+    n = 2
+    while name in taken:
+        name, n = f"{stem}-{n}.{ext}", n + 1
+    store = get_demo_store()
+    try:
+        await asyncio.to_thread(store.save, name, data, mime, sidecar)
+    except Exception as exc:
+        raise HTTPException(503, "Couldn't save the demo clip to storage") from exc
+    _demo_listing.invalidate()
+    _sync_demo_clips(repo)
+    return {"object": name, "kind": camera.kind, "size": len(data), **sidecar}
+
+
+@app.delete("/api/demo/clips")
+def delete_demo_clip(request: Request, object: str = Query(min_length=8, max_length=200)) -> dict:
+    """Removes the clip, its .json settings and its demo incident; cameras playing it get another clip."""
+    _require_demo_uploads(request)
+    _demo_clip_or_404(object)
+    repo = get_repo()
+    try:
+        get_demo_store().delete(object)
+    except Exception as exc:
+        raise HTTPException(503, "Couldn't delete the demo clip from storage") from exc
+    result = _demo_result(repo, object)
+    if result is not None:
+        repo.delete_incident(result.id)
+    repo.cache_put(_result_key(object), {"incident_id": None})
+    for camera in repo.cameras():
+        if camera.demo_clip == object:
+            camera.demo_clip = None
+            repo.save_camera(camera)
+    _demo_listing.invalidate()
+    _sync_demo_clips(repo)
+    return {"deleted": object}
+
+
+class DemoClipChoice(BaseModel):
+    # None = let the server pick one (least used of the camera's kind)
+    object: str | None = Field(default=None, max_length=200)
+
+
+@app.put("/api/cameras/{camera_id}/demo-clip")
+def set_camera_demo_clip(camera_id: str, body: DemoClipChoice, request: Request) -> dict:
+    require_manager(request)
+    repo = get_repo()
+    camera = _camera_or_404(repo, camera_id)
+    if body.object is None:
+        camera.demo_clip = None
+        repo.save_camera(camera)
+        camera = next(c for c in _sync_demo_clips(repo) if c.id == camera_id)
+    else:
+        clip = _demo_clip_or_404(body.object)
+        if clip.kind != camera.kind:
+            raise HTTPException(400, f"That is a {clip.kind} clip; this camera is a {camera.kind} camera")
+        camera.demo_clip = clip.object
+        repo.save_camera(camera)
+    return camera.model_dump()
+
+
+def _link_demo_result(repo: Repo, object_name: str, incident_doc: dict) -> dict:
+    """The incident becomes this clip's one result; an earlier analysis of the same clip is removed."""
+    incident = Incident(**incident_doc)
+    previous = _demo_result(repo, object_name)
+    if previous is not None and previous.id != incident.id:
+        repo.delete_incident(previous.id)
+    incident.source = "demo"
+    incident.clip_ref = object_name
+    repo.save_incident(incident)
+    repo.cache_put(_result_key(object_name), {"incident_id": incident.id})
+    return incident.model_dump()
 
 
 # ---------- camera zone layouts ----------
@@ -786,6 +1044,8 @@ class InvestigateMeta(BaseModel):
     tier1_screen: Tier1Screen | None = None
     # Investigate's Tier-1 hand measurements, when staff sent the clip with them
     tier1_measure: Tier1Measure | None = None
+    # Analysing a demo clip (object under demo/): the incident becomes that clip's result, and Gemini is always asked
+    demo_clip: str | None = Field(default=None, max_length=200)
 
 
 def enforce_app_check(request: Request) -> None:
@@ -900,6 +1160,11 @@ async def investigate_clip(request: Request) -> StreamingResponse:
         if problems:
             raise HTTPException(400, " ".join(problems))
 
+    if meta.demo_clip is not None:
+        clip_info = await asyncio.to_thread(_demo_clip_or_404, meta.demo_clip)
+        if clip_info.kind != camera.kind:
+            raise HTTPException(400, f"That is a {clip_info.kind} clip; pick a {clip_info.kind} camera")
+
     await asyncio.to_thread(enforce_limits, request, repo, "investigate", cfg().daily_investigations)
     if marked:
         clip, mime, stills = await _read_marked(request, cfg().max_clip_bytes)
@@ -940,9 +1205,12 @@ async def investigate_clip(request: Request) -> StreamingResponse:
             inventory_usage=meta.inventory_usage,
             tier1_screen=meta.tier1_screen,
             tier1_measure=meta.tier1_measure,
+            fresh=meta.demo_clip is not None,
         ):
             if event["type"] == "result" and meta.origin == "edge" and not event.get("cached"):
                 _retune(repo, camera.id)
+            if event["type"] == "result" and meta.demo_clip is not None:
+                event = {**event, "incident": _link_demo_result(repo, meta.demo_clip, event["incident"])}
             yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

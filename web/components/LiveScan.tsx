@@ -116,6 +116,7 @@ export default function LiveScan({
   controls = false,
   loop = false,
   onScan,
+  onTime,
   tuning = DEFAULT_TUNING,
 }: {
   src: string;
@@ -126,6 +127,8 @@ export default function LiveScan({
   /** Monitor keeps the aisle playing. Playback scans the clip once. */
   loop?: boolean;
   onScan?: (reading: ScanReading) => void;
+  /** The video's current time (seconds), e.g. for demo mode's alert-once. */
+  onTime?: (seconds: number) => void;
   /** The camera's auto-tuned gate (live from Firestore). */
   tuning?: EdgeTuning;
 }) {
@@ -314,6 +317,7 @@ export default function LiveScan({
         playsInline
         loop={loop}
         controls={controls}
+        onTimeUpdate={onTime ? (event) => onTime(event.currentTarget.currentTime) : undefined}
         aria-label={`${camera.name} live scan`}
       />
       <canvas ref={canvasRef} className="live-scan-overlay" />

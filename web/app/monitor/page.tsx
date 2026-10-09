@@ -10,7 +10,8 @@ import EdgeTuningBanner from "@/components/EdgeTuningBanner";
 import { armAlertSound, playAlertChime } from "@/lib/alertSound";
 import { toTuning, useEdgeConfig, useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useClipUrl } from "@/lib/useClip";
-import type { Camera, Incident, Rule, Zone } from "@/lib/types";
+import { AlertOnce, forDemoMode, useDemoClips, useDemoMode } from "@/lib/demoMode";
+import type { Camera, DemoClip, Incident, Rule, Zone } from "@/lib/types";
 
 type Filter = "all" | "review" | "rejected";
 
@@ -45,19 +46,28 @@ function GearIcon() {
   );
 }
 
-function CameraTile({ camera, marks, selected, zones, rules, onSelect, onSettings }: {
+function CameraTile({ camera, marks, selected, active, demoOn, demoClip, alerted, zones, rules, onSelect, onSettings, onTime }: {
   camera: Camera;
   marks: Incident[];
   selected: boolean;
+  /** Runs Tier-1 (pose, zones, gate score) on its clip; only one tile does, so the wall stays smooth. */
+  active: boolean;
+  demoOn: boolean;
+  demoClip: DemoClip | null;
+  /** This tile's clip has reached its analysed moment this session. */
+  alerted: boolean;
   zones: Zone[];
   rules: Rule[];
   onSelect: () => void;
   onSettings: () => void;
+  onTime: (seconds: number) => void;
 }) {
-  const clipUrl = useClipUrl(camera.id);
+  // Demo mode off: no video on any camera.
+  const clipUrl = useClipUrl(camera.id, demoOn && Boolean(camera.demo_clip));
   const { config } = useEdgeConfig(camera.id);
   const tuning = useMemo(() => toTuning(config), [config]);
   const boxes = marks.length > 0 ? marks : [null];
+  const result = demoClip?.result ?? null;
   return (
     <div className={`camera camera-${camera.kind}${selected ? " is-on" : ""}`}>
       <button
@@ -81,12 +91,34 @@ function CameraTile({ camera, marks, selected, zones, rules, onSelect, onSetting
           >
             <GearIcon />
           </button>
-          <span className="chip tone-success">Live</span>
+          <span className="chip tone-success">{demoOn && clipUrl ? "Demo feed" : "Live"}</span>
         </span>
       </span>
       <span className="camera-scene">
-        {clipUrl && <LiveScan src={clipUrl} camera={camera} zones={zones} rules={rules} tuning={tuning} loop />}
-        {!clipUrl && boxes.map((incident, index) => (
+        {demoOn && clipUrl && active && (
+          <LiveScan src={clipUrl} camera={camera} zones={zones} rules={rules} tuning={tuning} loop onTime={onTime} />
+        )}
+        {demoOn && clipUrl && !active && (
+          <video
+            className="camera-video"
+            src={clipUrl}
+            crossOrigin="anonymous"
+            muted
+            autoPlay
+            loop
+            playsInline
+            aria-label={`${camera.name} demo feed`}
+            onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
+          />
+        )}
+        {demoOn && clipUrl && alerted && result && (
+          <span className={`demo-alert tone-${result.verdict === "BENIGN" ? "calm" : "danger"}`} role="status">
+            {VERDICT_LABEL[result.verdict]} {Math.round(result.confidence * 100)}% · Gemini
+          </span>
+        )}
+        {demoOn && clipUrl && !result && <span className="demo-alert">Not analysed yet</span>}
+        {demoOn && !camera.demo_clip && <span className="demo-empty">No demo clip for this camera yet</span>}
+        {!demoOn && boxes.map((incident, index) => (
           <span key={incident?.id ?? "clear"} className={`wall-box wall-box-${index} tone-${incident ? boxTone(incident) : "calm"}`}>
             <span className="wall-tag">
               {incident
@@ -108,7 +140,15 @@ function CameraTuning({ camera }: { camera: Camera }) {
 
 export default function MonitorPage() {
   const { store, error: storeError } = useStore();
-  const { data: incidents, error, live } = useIncidents();
+  const { data: allIncidents, error, live } = useIncidents();
+  const [demoOn, setDemoOn] = useDemoMode();
+  // Demo-clip incidents only show in demo mode.
+  const incidents = useMemo(() => (allIncidents ? forDemoMode(allIncidents, demoOn) : null), [allIncidents, demoOn]);
+  const { clips: demoClips } = useDemoClips(demoOn);
+  const clipByObject = useMemo(() => new Map((demoClips ?? []).map((clip) => [clip.object, clip])), [demoClips]);
+  const alertsRef = useRef(new AlertOnce());
+  // Demo alerts this session, newest first: the incident jumps to the top of the list when its clip reaches it.
+  const [demoAlerts, setDemoAlerts] = useState<{ clip: string; incidentId: string; at: number }[]>([]);
   const { data: rules } = useRules();
   const [filter, setFilter] = useState<Filter>("all");
   const [cameraId, setCameraId] = useState<string | null>(null);
@@ -134,8 +174,19 @@ export default function MonitorPage() {
   const visible = useMemo(() => {
     const byFilter = (incident: Incident) =>
       filter === "all" || (filter === "review" ? incident.status === "NEEDS_REVIEW" : incident.status === "REJECTED");
-    return (incidents ?? []).filter((incident) => byFilter(incident) && (!cameraId || incident.camera_id === cameraId));
-  }, [incidents, filter, cameraId]);
+    const shown = (incidents ?? []).filter((incident) => byFilter(incident) && (!cameraId || incident.camera_id === cameraId));
+    const order = new Map(demoAlerts.map((alert, index) => [alert.incidentId, index]));
+    return [...shown].sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity));
+  }, [incidents, filter, cameraId, demoAlerts]);
+  const alertAt = useMemo(() => new Map(demoAlerts.map((alert) => [alert.incidentId, alert.at])), [demoAlerts]);
+
+  /** A looping demo tile reached its clip's analysed moment: show the verdict once per clip per session. */
+  const onDemoTime = (clip: DemoClip | null, seconds: number) => {
+    const result = clip?.result;
+    if (!clip || !result || !alertsRef.current.check(clip.object, result.alert_at, seconds)) return;
+    setDemoAlerts((prev) => [{ clip: clip.object, incidentId: result.incident_id, at: Date.now() }, ...prev]);
+    if (result.status === "NEEDS_REVIEW") playAlertChime();
+  };
 
   const heard = useRef<Set<string> | null>(null);
   useEffect(() => {
@@ -157,6 +208,8 @@ export default function MonitorPage() {
   const waiting = (incidents ?? []).filter((incident) => incident.status === "NEEDS_REVIEW").length;
   const model = incidents?.[0]?.model ?? "Gemini";
   const edgeCamera = cameraId ?? store?.cameras[0]?.id ?? "cam-sco-1";
+  // Tier-1 runs on one tile: the selected camera, else the first one with a demo clip.
+  const activeId = cameraId ?? store?.cameras.find((camera) => camera.demo_clip)?.id ?? null;
 
   return (
     <>
@@ -166,6 +219,15 @@ export default function MonitorPage() {
           <p>Live cameras on the floor. Gemini has already reviewed the alerts on the right.</p>
         </div>
         <div className="row">
+          <button
+            type="button"
+            className={`chip demo-toggle${demoOn ? " tone-accent" : ""}`}
+            aria-pressed={demoOn}
+            onClick={() => setDemoOn(!demoOn)}
+            title="Demo mode plays each camera's demo clip and its stored Gemini result. No Gemini calls."
+          >
+            Demo mode {demoOn ? "on" : "off"}
+          </button>
           <span className={`chip ${live ? "tone-success" : ""}`}>{live ? "Live" : "Connecting"}</span>
           <Link href="/investigate" className="btn btn-primary">Investigate a clip</Link>
           <Link href="/settings?section=rules" className="btn">Store rules</Link>
@@ -201,6 +263,11 @@ export default function MonitorPage() {
                   camera={camera}
                   marks={openIncidents(incidents ?? [], camera.id)}
                   selected={cameraId === camera.id}
+                  active={activeId === camera.id}
+                  demoOn={demoOn}
+                  demoClip={camera.demo_clip ? clipByObject.get(camera.demo_clip) ?? null : null}
+                  alerted={Boolean(camera.demo_clip && demoAlerts.some((alert) => alert.clip === camera.demo_clip))}
+                  onTime={(seconds) => onDemoTime(camera.demo_clip ? clipByObject.get(camera.demo_clip) ?? null : null, seconds)}
                   zones={store.zones}
                   rules={rules ?? []}
                   onSelect={() => setCameraId(cameraId === camera.id ? null : camera.id)}
@@ -233,10 +300,15 @@ export default function MonitorPage() {
           <div className="feed">
             {visible.map((incident) => (
               <Link key={incident.id} href={`/incident?id=${encodeURIComponent(incident.id)}`} className="alert-row">
-                <time dateTime={incident.created_at}>{clock(incident.created_at)}</time>
+                <time dateTime={incident.created_at}>
+                  {clock(alertAt.has(incident.id) ? new Date(alertAt.get(incident.id)!).toISOString() : incident.created_at)}
+                </time>
                 <span>
                   <strong>{VERDICT_LABEL[incident.verdict.verdict]}</strong>
                   <span className="muted"> · {incident.camera_name}</span>
+                  {incident.source === "demo" && (
+                    <span className="chip demo-chip">{alertAt.has(incident.id) ? "Demo clip · just now" : "Demo clip"}</span>
+                  )}
                 </span>
               </Link>
             ))}

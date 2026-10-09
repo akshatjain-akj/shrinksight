@@ -59,3 +59,23 @@ test("action crop covers the zones with a margin, or nothing when it would keep 
   assert.equal(actionCrop(whole), null);
   assert.equal(actionCrop([]), null);
 });
+
+test("zones saved with a demo clip land on this camera's zones by id, else by kind", async () => {
+  const { applyHints } = await import("./zones.ts");
+  const square = [{ x: 0.1, y: 0.1 }, { x: 0.3, y: 0.1 }, { x: 0.3, y: 0.3 }];
+  const shapes = [
+    { id: "z-scan-2", kind: "scanner", polygon: [] },
+    { id: "z-bag-2", kind: "bagging", polygon: [] },
+    { id: "z-pick-2", kind: "pickup", polygon: [] },
+  ] as unknown as Parameters<typeof applyHints>[0];
+  const hints = [
+    { zone_id: "z-scan-1", kind: "scanner" as const, polygon: square, description: "paper square" },
+    { zone_id: "z-bag-2", kind: "bagging" as const, polygon: square, description: "" },
+  ];
+
+  const out = applyHints(shapes, {}, hints);
+
+  assert.deepEqual(out.placed, ["z-scan-2", "z-bag-2"]);
+  assert.equal(out.descriptions["z-scan-2"], "paper square");
+  assert.equal(out.shapes[2].polygon.length, 0);
+});

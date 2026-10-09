@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import CameraConfig from "@/components/CameraConfig";
+import DemoClipsDesk from "@/components/DemoClipsDesk";
 import RoleConfig from "@/components/RoleConfig";
 import RulesDesk from "@/components/RulesDesk";
 import ZoneConfig from "@/components/ZoneConfig";
@@ -13,12 +14,13 @@ const SECTIONS = [
   { id: "zones", label: "Zones", hint: "Spots inside a camera" },
   { id: "rules", label: "Rules", hint: "Plain-English store rules" },
   { id: "roles", label: "Roles", hint: "Manager and user access" },
+  { id: "demo", label: "Demo clips", hint: "Feeds for demo mode" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
 function isSection(value: string | null): value is SectionId {
-  return value === "cameras" || value === "zones" || value === "rules" || value === "roles";
+  return value === "cameras" || value === "zones" || value === "rules" || value === "roles" || value === "demo";
 }
 
 // useSearchParams needs a Suspense boundary for the static export.
@@ -82,6 +84,9 @@ function SettingsContent() {
         </div>
         <div role="tabpanel" id="settings-panel-roles" aria-labelledby="settings-tab-roles" hidden={section !== "roles"}>
           <RoleConfig />
+        </div>
+        <div role="tabpanel" id="settings-panel-demo" aria-labelledby="settings-tab-demo" hidden={section !== "demo"}>
+          {section === "demo" && <DemoClipsDesk />}
         </div>
         </div>
       </div>

@@ -247,6 +247,11 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
               <VerdictBadge verdict={verdict.verdict} confidence={verdict.confidence} />
               <StatusPill status={current.status} />
               {incident.source === "seed" && <span className="chip">Example</span>}
+              {incident.source === "demo" && (
+                <span className="chip" title="The stored result of a demo clip, replayed in demo mode without new Gemini calls">
+                  Demo clip
+                </span>
+              )}
               {incident.overridden && (
                 <span className="chip tone-warning" title={incident.receipt_check ?? undefined}>
                   Receipt check overrode Gemini’s verdict

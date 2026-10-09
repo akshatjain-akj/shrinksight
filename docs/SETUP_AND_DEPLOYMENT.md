@@ -457,7 +457,45 @@ It deletes live incidents, receipts typed on Investigate, the cache pointers to 
 isn't part of the seed, every camera's auto-tuned edge gate, and cameras, zones and rules added on the site (for
 example by judges in the demo store). It never touches `inc-seed-*`, `TXN-L1-*`/`TXN-L2-*`, or seed cameras, zones,
 rules and feedback. Add `--reset-seed` to also restore the seed data as shipped (example incidents un-reviewed, seed
-roles back); the API rewrites it the next time an instance starts (after a deploy, or after scale-to-zero).
+roles back); the API rewrites it the next time an instance starts (after a deploy, or after scale-to-zero). Demo-clip
+results are kept unless you add `--demo` (the clips themselves stay in storage).
+
+## Demo mode clips
+In demo mode (toggle on the Monitor; on by default for the demo login, off for everyone else) each camera loops a clip
+from the bucket's `demo/` folder and replays that clip's stored Gemini result. Live clips are still never stored.
+
+**Add clips, either way:**
+- **On the site:** Investigate → choose the clip and camera, mark the zones, enter the receipt → tick **Save as a demo
+  clip for the Monitor** → Investigate. The original file and a settings file are saved, and the result is stored.
+- **Cloud console or terminal**, then Settings → Demo clips → **Analyse**:
+  ```bash
+  gcloud storage cp lane-pocket.mp4 lane-pocket.mp4.json gs://shrinksight-app-evidence/demo/checkout/
+  gcloud storage cp aisle-hide.mp4 gs://shrinksight-app-evidence/demo/floor/
+  gcloud storage ls "gs://shrinksight-app-evidence/demo/**"
+  ```
+  The folder decides the camera type. The optional `<clip>.json` (same name plus `.json`) holds:
+  ```json
+  { "receipt": [{ "name": "biscuit", "price_inr": 40 }],
+    "zones": [ ...from "Copy zones for eval" on Investigate... ],
+    "expected": "SCAN_AVOIDANCE" }
+  ```
+  New clips appear within about 5 minutes (the listing is cached per instance).
+- The two earlier demo videos move into the folder once:
+  ```bash
+  gcloud storage cp gs://shrinksight-app-evidence/seed/desktop-demo.mov gs://shrinksight-app-evidence/demo/floor/
+  gcloud storage cp gs://shrinksight-app-evidence/seed/test1-theft.mov gs://shrinksight-app-evidence/demo/floor/
+  ```
+
+Each camera (including new ones) gets the least-used clip of its type; change it in Settings → Demo clips. Each clip has
+exactly one stored result; **Re-analyse** replaces it. Saving needs the runtime account to write to the bucket (once):
+```bash
+gcloud storage buckets add-iam-policy-binding gs://shrinksight-app-evidence \
+  --member="serviceAccount:api-runtime@shrinksight-app.iam.gserviceaccount.com" --role="roles/storage.objectUser"
+```
+Your own or consented footage only.
+
+**Before submission:** set `DEMO_CLIP_UPLOADS=off` (below) so nobody can add or delete demo clips from the site. Demo
+mode keeps playing and clips can still be analysed. The demo account can never save or delete demo clips.
 
 ## Demo login and daily limits
 - **Enter the demo store** (login page and home page) signs in as the seeded demo manager (`demo@shrinksight.app`)
@@ -466,13 +504,16 @@ roles back); the API rewrites it the next time an instance starts (after a deplo
 - **Daily investigation limit** (`DAILY_INVESTIGATIONS`, default 40 for everyone together). When it, or the free Gemini
   quota, runs out, the app says so and resets the next day; nothing is charged on a free-tier key.
 
-Both are Cloud Run environment variables. Two ways to change them:
+- **Saving demo clips from the site** (`DEMO_CLIP_UPLOADS`, default on): `off` hides "Save as a demo clip" and Delete,
+  and the server refuses them.
+
+All three are Cloud Run environment variables. Two ways to change them:
 ```bash
 # Right now (new revision in ~30 s; lasts until the next deploy)
 gcloud run services update shrinksight-api --region us-central1 --update-env-vars DAILY_INVESTIGATIONS=80
 
 # Permanently: GitHub repo → Settings → Secrets and variables → Actions → Variables → New variable
-#   DAILY_INVESTIGATIONS = 80      (and/or DEMO_LOGIN = off)
+#   DAILY_INVESTIGATIONS = 80      (and/or DEMO_LOGIN = off, DEMO_CLIP_UPLOADS = off)
 # The next deploy (push to main) passes it to Cloud Run. Empty or unset = the default.
 ```
 Do both if you want the change now and to survive the next deploy: every deploy replaces the service's variables

@@ -2,6 +2,7 @@ import { appCheckToken } from "./firebase";
 import { authHeader, clearSession, readSession, type Session } from "./session";
 import type {
   AskAnswer,
+  DemoClip,
   CameraLayout,
   Camera,
   CameraPrefs,
@@ -79,6 +80,32 @@ export async function openSession(email: string, password: string, remember = fa
 }
 
 /** "Enter the demo store": the server signs in its demo manager; no password ever reaches the browser. */
+/**
+ * Saves the original clip as a demo clip (demo/<kind>/ in the bucket), with its receipt, zones and expected verdict.
+ * Returns the object name, used to analyse it as that clip's one result.
+ */
+export async function saveDemoClip(
+  clip: Blob,
+  filename: string,
+  cameraId: string,
+  settings: { receipt?: ReceiptLine[]; zones?: unknown[]; expected?: string },
+): Promise<{ object: string }> {
+  const form = new FormData();
+  form.append("clip", clip, filename);
+  form.append("camera_id", cameraId);
+  if (settings.receipt?.length) form.append("receipt", JSON.stringify(settings.receipt));
+  if (settings.zones?.length) form.append("zones", JSON.stringify(settings.zones));
+  if (settings.expected) form.append("expected", settings.expected);
+  const token = await appCheckToken();
+  const res = await fetch(`${API_BASE}/api/demo/clips`, {
+    method: "POST",
+    body: form,
+    headers: { ...authHeader(), ...(token ? { "x-firebase-appcheck": token } : {}) },
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json() as Promise<{ object: string }>;
+}
+
 export async function openDemoSession(): Promise<Session> {
   const res = await fetch(`${API_BASE}/api/session/demo`, { method: "POST" });
   if (!res.ok) throw await errorFrom(res);
@@ -140,6 +167,16 @@ export const api = {
     }),
   clip: (cameraId: string) =>
     request<{ camera_id: string; url: string; expires_in: number }>(`/api/clips/${encodeURIComponent(cameraId)}`),
+  demoClips: () => request<{ clips: DemoClip[]; uploads: boolean }>("/api/demo/clips"),
+  demoClipUrl: (object: string) =>
+    request<{ object: string; url: string; expires_in: number }>(`/api/demo/url?object=${encodeURIComponent(object)}`),
+  deleteDemoClip: (object: string) =>
+    request<{ deleted: string }>(`/api/demo/clips?object=${encodeURIComponent(object)}`, { method: "DELETE" }),
+  setCameraDemoClip: (cameraId: string, object: string | null) =>
+    request<Camera>(`/api/cameras/${encodeURIComponent(cameraId)}/demo-clip`, {
+      method: "PUT",
+      body: JSON.stringify({ object }),
+    }),
   transactions: (laneId: string) => request<Transaction[]>(`/api/transactions?lane_id=${encodeURIComponent(laneId)}`),
   incidents: () => request<Incident[]>("/api/incidents"),
   incident: (id: string) => request<Incident>(`/api/incidents/${encodeURIComponent(id)}`),
@@ -261,6 +298,8 @@ export interface InvestigateMeta {
   /** "none" skips the camera's saved scanner photo for this clip. */
   scanner_photo?: "saved" | "none";
   inventory_usage?: TokenUsage;
+  /** Analysing a demo clip: the incident becomes that clip's one result. */
+  demo_clip?: string;
   /** Set when Investigate screened the clip with Tier-1 first ("cleared" = sent anyway). */
   tier1_screen?: "flagged" | "cleared";
   /** Investigate's Tier-1 hand measurements, when staff send the clip with them. */

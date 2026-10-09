@@ -720,6 +720,53 @@ button.chip[aria-pressed="true"] {
   font-size: 0.72rem;
   white-space: nowrap;
 }
+.demo-alert {
+  position: absolute;
+  z-index: 3;
+  left: 0.5rem;
+  top: 2.3rem;
+  max-width: calc(100% - 1rem);
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  background: rgb(7 13 24 / 0.85);
+  color: #e2e8f0;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.demo-alert.tone-danger {
+  border: 1px solid #f87171;
+  color: #fecaca;
+}
+.demo-alert.tone-calm {
+  border: 1px solid #34d399;
+  color: #bbf7d0;
+}
+.demo-empty {
+  position: absolute;
+  inset: auto 0.5rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.demo-chip {
+  margin-left: 0.4rem;
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+.demo-ok {
+  color: #34d399;
+}
+.demo-bad {
+  color: #f87171;
+}
+.demo-toggle {
+  cursor: pointer;
+}
 .wall-status {
   display: flex;
   flex-wrap: wrap;

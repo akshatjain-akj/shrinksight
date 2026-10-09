@@ -109,6 +109,10 @@ class Settings:
     # The roster itself lives in the users collection, not in env.
     auth_secret: str = field(default_factory=lambda: _env("AUTH_SECRET"))
     # One-click "Enter the demo store" on the login page (signs in as the demo manager). DEMO_LOGIN=off hides it.
+    # Saving / deleting demo clips from the site (never from the demo account). DEMO_CLIP_UPLOADS=off for submission.
+    demo_clip_uploads: bool = field(
+        default_factory=lambda: _env("DEMO_CLIP_UPLOADS", "on").lower() not in ("off", "false", "0", "no")
+    )
     demo_login: bool = field(
         default_factory=lambda: _env("DEMO_LOGIN", "on").lower() not in ("off", "false", "0", "no")
     )

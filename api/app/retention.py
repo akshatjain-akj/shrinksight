@@ -1,6 +1,6 @@
 """How long a playback record stays.
 
-False alarms go after 1 day. A real theft or a hazard stays 7 days. Seeded demo incidents are never removed.
+False alarms go after 1 day. A real theft or a hazard stays 7 days. Seeded and demo-clip incidents are never removed.
 """
 
 from datetime import UTC, datetime
@@ -53,7 +53,7 @@ def oldest_kept_iso(now: datetime | None = None) -> str:
 
 
 def is_expired(doc: dict, now: datetime | None = None) -> bool:
-    if doc.get("source") == "seed" or str(doc.get("id") or "").startswith("inc-seed-"):
+    if doc.get("source") in ("seed", "demo") or str(doc.get("id") or "").startswith("inc-seed-"):
         return False
     created = _created(doc)
     if created is None:

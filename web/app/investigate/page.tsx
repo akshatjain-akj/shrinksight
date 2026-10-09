@@ -11,21 +11,22 @@ import ScannerPhoto, { SCANNER_PHOTO_NONE, type ScannerPhotoState } from "@/comp
 import Tier1ScreenCard, { hitText } from "@/components/Tier1ScreenCard";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import ZoneMarker, { markedShapes, type ZoneState } from "@/components/ZoneMarker";
-import { api, investigateStream, type InvestigateMeta, type MarkedStill } from "@/lib/api";
+import { api, investigateStream, saveDemoClip, type InvestigateMeta, type MarkedStill } from "@/lib/api";
 import { polygonsForCamera, savedDescriptions, savedZoneIds, syncLayoutsFromServer } from "@/lib/cameraConfig";
-import { inr } from "@/lib/format";
+import { VERDICT_LABEL, inr } from "@/lib/format";
 import { keepClipsOn, saveLocalClip } from "@/lib/localClips";
 import { canvasToJpeg, firstFrame, markedStills, numberedPile, pileViews, type Frame, type PileViews } from "@/lib/frames";
 import { shrinkClip } from "@/lib/transcode";
 import { toTuning, useEdgeConfig, useRules, useStore } from "@/lib/hooks";
 import { stamp } from "@/lib/tier1/engine.ts";
 import { scanClip, type ScanResult } from "@/lib/tier1/scanClip";
-import { actionCrop, rectToBox, shapesToHints } from "@/lib/tier1/zones";
-import type { Incident, ReceiptLine, TokenUsage, Transaction } from "@/lib/types";
+import { actionCrop, applyHints, rectToBox, shapesToHints } from "@/lib/tier1/zones";
+import type { DemoClip, Incident, ReceiptLine, TokenUsage, Transaction, VerdictKind, ZoneHint } from "@/lib/types";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const CUSTOM = "custom";
 const SCREEN_KEY = "shrinksight.tier1Screen";
+const VERDICTS: VerdictKind[] = ["BENIGN", "SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH", "INCONCLUSIVE"];
 
 export default function InvestigatePage() {
   const { store, error: storeError } = useStore();
@@ -38,6 +39,16 @@ export default function InvestigatePage() {
   const [screenNote, setScreenNote] = useState<string | null>(null);
   const [source, setSource] = useState<"upload" | "record">("upload");
   const [clip, setClip] = useState<Blob | null>(null);
+  const [clipName, setClipName] = useState("clip.webm");
+  // Demo clips: analysing one (opened from Settings → Demo clips), or saving this clip as a new one.
+  const [demoClip, setDemoClip] = useState<DemoClip | null>(null);
+  const [demoUploads, setDemoUploads] = useState(false);
+  const [saveAsDemo, setSaveAsDemo] = useState(false);
+  const [expected, setExpected] = useState<VerdictKind | "">("");
+  const [demoNote, setDemoNote] = useState<string | null>(null);
+  const [savedDemo, setSavedDemo] = useState<string | null>(null);
+  // Zones saved with the demo clip, applied once the camera's own zone boxes are loaded.
+  const [pendingHints, setPendingHints] = useState<ZoneHint[] | null>(null);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -129,6 +140,63 @@ export default function InvestigatePage() {
     };
   }, [camera, store]);
 
+  // Apply a demo clip's saved zones to this camera's boxes as soon as they exist.
+  useEffect(() => {
+    if (!zoneState || !pendingHints || !camera) return;
+    // Wait for this camera's boxes (right after a camera switch the previous camera's may still be here).
+    if (!zoneState.shapes.some((shape) => camera.zone_ids.includes(shape.id))) return;
+    const out = applyHints(zoneState.shapes, zoneState.descriptions, pendingHints);
+    setPendingHints(null);
+    if (!out.placed.length) return;
+    setZoneState({ ...zoneState, shapes: out.shapes, descriptions: out.descriptions, marked: out.placed, send: true, saved: false });
+  }, [zoneState, pendingHints, camera]);
+
+  // Whether this account may save demo clips (never the demo account, and only while DEMO_CLIP_UPLOADS is on).
+  useEffect(() => {
+    api
+      .demoClips()
+      .then((body) => setDemoUploads(body.uploads))
+      .catch(() => setDemoUploads(false));
+  }, []);
+
+  // ?demo=<clip>: analyse a demo clip, pre-filled with its camera, zones, receipt and expected verdict.
+  const demoParam = useRef<string | null>(null);
+  useEffect(() => {
+    if (!store || demoParam.current !== null) return;
+    demoParam.current = new URLSearchParams(window.location.search).get("demo") ?? "";
+    const wanted = demoParam.current;
+    if (!wanted) return;
+    let cancelled = false;
+    setDemoNote("Loading the demo clip…");
+    (async () => {
+      const { clips } = await api.demoClips();
+      const found = clips.find((item) => item.object === wanted);
+      if (!found) throw new Error("That demo clip no longer exists.");
+      const target =
+        store.cameras.find((c) => found.cameras.includes(c.id) && c.kind === found.kind) ??
+        store.cameras.find((c) => c.kind === found.kind);
+      if (!target) throw new Error(`Add a ${found.kind} camera first.`);
+      const { url } = await api.demoClipUrl(found.object);
+      const blob = await (await fetch(url)).blob();
+      if (cancelled) return;
+      setDemoClip(found);
+      setCameraId(target.id);
+      setPendingHints(found.zones.length ? found.zones : null);
+      if (found.receipt.length) {
+        setReceiptChoice(CUSTOM);
+        setLines(found.receipt.map((line) => ({ ...emptyLine(), name: line.name, price_inr: line.price_inr })));
+      }
+      setExpected(found.expected ?? "");
+      acceptClip(new File([blob], found.name, { type: blob.type || "video/mp4" }));
+      setDemoNote(null);
+    })().catch((e: Error) => !cancelled && setDemoNote(`Couldn’t open the demo clip: ${e.message}`));
+    return () => {
+      cancelled = true;
+    };
+    // acceptClip and the setters are stable for this one-off load
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store]);
+
   useEffect(() => {
     if (!clipUrl) return;
     let cancelled = false;
@@ -167,6 +235,7 @@ export default function InvestigatePage() {
       return;
     }
     setClip(blob);
+    setClipName(blob instanceof File && blob.name ? blob.name : "recorded-clip.webm");
     setClipUrl(URL.createObjectURL(blob));
   };
 
@@ -256,6 +325,27 @@ export default function InvestigatePage() {
     const advance = (label: string) =>
       setSteps((prev) => [...prev.map((s) => ({ ...s, done: true })), { label, done: false }]);
     const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+
+    // Demo clips: analysing an existing one, or saving this original file as a new one first. Either way the
+    // incident becomes that clip's one stored result (the server always asks Gemini again for it).
+    setSavedDemo(null);
+    if (demoClip && demoClip.kind === camera.kind) {
+      meta.demo_clip = demoClip.object;
+    } else if (saveAsDemo && demoUploads) {
+      setSteps([{ label: "Saving the demo clip", done: false }]);
+      try {
+        const saved = await saveDemoClip(clip, clipName, camera.id, {
+          receipt: meta.receipt,
+          zones: meta.zones,
+          expected: expected || undefined,
+        });
+        meta.demo_clip = saved.object;
+      } catch (e) {
+        setError(`Couldn’t save the demo clip: ${(e as Error).message}`);
+        setRunning(false);
+        return;
+      }
+    }
 
     // 0. Tier-1's result rides along: the gate's decision always, the measurements and close-ups if chosen. The
     // gate's own signal names ("put back", "possible hide") are conclusions, so they never go to Gemini.
@@ -361,6 +451,7 @@ export default function InvestigatePage() {
           } else if (event.type === "result") {
             setSteps((prev) => prev.map((s) => ({ ...s, done: true })));
             setResult({ incident: event.incident, cached: event.cached });
+            if (meta.demo_clip) setSavedDemo(meta.demo_clip);
             // The original file (Gemini's boxes are mapped back to the full picture, so they line up with it).
             setKeptUntil(null);
             if (keepClipsOn()) {
@@ -390,6 +481,9 @@ export default function InvestigatePage() {
 
   const reset = () => {
     setResult(null);
+    setSavedDemo(null);
+    setDemoClip(null);
+    setSaveAsDemo(false);
     setKeptUntil(null);
     setScreened(null);
     setScreenNote(null);
@@ -412,6 +506,11 @@ export default function InvestigatePage() {
             See it in the monitor
           </Link>
           {result.cached && <span className="chip">Cached analysis · no AI quota used</span>}
+          {savedDemo && (
+            <Link href="/settings?section=demo" className="chip tone-accent">
+              Stored as the result of demo clip {savedDemo.split("/").pop()}
+            </Link>
+          )}
           {typeof keptUntil === "number" && (
             <span className="chip" title="Only in this browser, for replay on the incident page and in Playback">
               Clip kept on this device until{" "}
@@ -441,6 +540,14 @@ export default function InvestigatePage() {
 
       {storeError && <ErrorNotice>Couldn’t load the store: {storeError}</ErrorNotice>}
       {!store && !storeError && <Skeletons count={3} />}
+      {demoNote && <p className="hint">{demoNote}</p>}
+      {demoClip && (
+        <p className="card small" style={{ margin: "0 0 1rem" }}>
+          <strong>Analysing demo clip {demoClip.name}.</strong> Its saved camera type, zones and receipt are filled in;
+          check them, then investigate. The result {demoClip.result ? "replaces the stored one" : "becomes its stored result"}{" "}
+          for demo mode.
+        </p>
+      )}
 
       {store && (
         <div className="grid-main">
@@ -567,6 +674,28 @@ export default function InvestigatePage() {
                 decides and measures; you then choose to send the clip to Gemini.
               </span>
             </label>
+            {demoUploads && !demoClip && (
+              <label className="row" style={{ alignItems: "flex-start", fontWeight: 400 }}>
+                <input type="checkbox" checked={saveAsDemo} onChange={(e) => setSaveAsDemo(e.target.checked)} style={{ marginTop: 4 }} />
+                <span className="small">
+                  <strong>Save as a demo clip for the Monitor</strong>. The original file, these zones and the receipt are
+                  kept in demo storage, and this result becomes its stored result for demo mode.
+                </span>
+              </label>
+            )}
+            {saveAsDemo && !demoClip && (
+              <div className="field">
+                <label htmlFor="demo-expected">Expected verdict (optional, shown as a check in Settings)</label>
+                <select id="demo-expected" value={expected} onChange={(e) => setExpected(e.target.value as VerdictKind | "")}>
+                  <option value="">Not set</option>
+                  {VERDICTS.map((v) => (
+                    <option key={v} value={v}>
+                      {VERDICT_LABEL[v]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <label className="row" style={{ alignItems: "flex-start", fontWeight: 400 }}>
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 4 }} />
               <span className="small">

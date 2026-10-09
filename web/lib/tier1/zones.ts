@@ -43,6 +43,30 @@ export function shapesToHints(shapes: ZoneShape[], descriptions: Record<string, 
     }));
 }
 
+/**
+ * Applies zones saved with a demo clip (possibly marked on another camera) to this camera's shapes: matched by zone
+ * id, else by kind. Returns the ids that were placed.
+ */
+export function applyHints(
+  shapes: ZoneShape[],
+  descriptions: Record<string, string>,
+  hints: ZoneHint[],
+): { shapes: ZoneShape[]; descriptions: Record<string, string>; placed: string[] } {
+  const unused = [...hints];
+  const placed: string[] = [];
+  const nextDescriptions = { ...descriptions };
+  const next = shapes.map((shape) => {
+    const index = unused.findIndex((h) => h.zone_id === shape.id);
+    const at = index >= 0 ? index : unused.findIndex((h) => h.kind === shape.kind);
+    if (at < 0 || (unused[at].polygon?.length ?? 0) < 3) return shape;
+    const [hint] = unused.splice(at, 1);
+    placed.push(shape.id);
+    if (hint.description) nextDescriptions[shape.id] = hint.description;
+    return { ...shape, polygon: hint.polygon.map((p) => ({ x: clamp01(p.x), y: clamp01(p.y) })) };
+  });
+  return { shapes: next, descriptions: nextDescriptions, placed };
+}
+
 /** Applies Gemini's suggestions: found zones get the suggested box and description; others keep their shape. */
 export function applySuggestions(
   shapes: ZoneShape[],

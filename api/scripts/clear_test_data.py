@@ -5,6 +5,7 @@ Usage (from api/):
     uv run python scripts/clear_test_data.py            # dry run: lists what would be deleted
     uv run python scripts/clear_test_data.py --yes      # deletes it
     uv run python scripts/clear_test_data.py --yes --reset-seed   # ...and restores the seed data as shipped
+    uv run python scripts/clear_test_data.py --yes --demo         # ...and the demo-clip results (clips stay)
 
 Deletes live incidents, receipts typed on Investigate, the cache pointers to investigations, manager feedback that
 isn't part of the seed, every camera's auto-tuned edge gate, and cameras, zones and rules added on the site (for
@@ -31,6 +32,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--project", default=os.environ.get("GCP_PROJECT", "shrinksight-app"))
     parser.add_argument("--yes", action="store_true", help="really delete (default is a dry run)")
+    parser.add_argument("--demo", action="store_true",
+                        help="also delete the analysed results of demo clips (the clips stay in storage)")
     parser.add_argument("--reset-seed", action="store_true",
                         help="also restore the seed documents as shipped (on the next API start)")
     args = parser.parse_args()
@@ -39,7 +42,7 @@ def main() -> None:
 
     db = firestore.Client(project=args.project)
     docs = {name: {d.id: d.to_dict() or {} for d in db.collection(name).stream()} for name in COLLECTIONS}
-    doomed = select_test_data(docs)
+    doomed = select_test_data(docs, include_demo=args.demo)
 
     total = sum(len(ids) for ids in doomed.values())
     for name, ids in doomed.items():

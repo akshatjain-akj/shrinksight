@@ -101,6 +101,25 @@ erDiagram
   a marked exit zone.
 - **Send log** on Live edge: trigger, verdict, reason, incident link and a download of exactly what Gemini received.
 
+## Built demo mode
+
+- **Clips:** `gs://…/demo/checkout/` and `demo/floor/`, each with an optional `<clip>.json` (receipt, zones, expected).
+  `api/app/demo.py` lists the folder (cached 5 min), keeps only known settings fields, and signs read URLs only for
+  objects under `demo/`.
+- **Cameras:** `Camera.demo_clip`, assigned least-used-of-its-kind on create, for the seed cameras, and whenever a
+  camera has none (`demo.fill` on `/api/store`). Settings → Demo clips can change it.
+- **One result per clip:** Investigate with `demo_clip` always asks Gemini (no cache read), then the incident is saved
+  as `source: "demo"` with `clip_ref`, an earlier result for that clip is deleted, and `cache/demo:<clip>` points at
+  it. Demo incidents never expire. Clips are added from Investigate ("Save as a demo clip", which uploads the original
+  file and writes the `.json`) or the Cloud console; both are analysed through the full Investigate pipeline.
+- **Monitor:** a Demo mode toggle (on for the demo account, off for others, per account per browser). On: tiles loop
+  their clip, Tier-1 runs on the selected tile only, and each clip's verdict shows once per session when playback
+  reaches its analysed moment (`alert_at`), moving its incident to the top. No Gemini calls, no new incidents. Off: no
+  video, and demo incidents are hidden from Monitor and Playback.
+- **Playback / incident page:** a demo incident plays its `clip_ref` with the time-synced Gemini boxes.
+- **Switch:** `DEMO_CLIP_UPLOADS=off` disables saving and deleting demo clips (for the submission); the demo account
+  can never do either.
+
 ## Built demo login and on-device replay
 
 - **Enter the demo store:** `POST /api/session/demo` mints a normal manager session for the seeded demo account, so

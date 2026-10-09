@@ -21,6 +21,8 @@ export interface Camera {
   kind: CameraKind;
   lane_id: string | null;
   zone_ids: string[];
+  /** Demo mode: the clip (object under demo/) this camera plays. */
+  demo_clip?: string | null;
 }
 
 export type Hand = "left" | "right";
@@ -225,7 +227,10 @@ export interface Incident {
   unscanned_items: UnscannedItem[];
   est_loss_inr: number;
   model: string;
-  source: "seed" | "live";
+  /** "demo": the analysed result of a demo clip, replayed on every Monitor loop. */
+  source: "seed" | "live" | "demo";
+  /** The demo clip this incident was analysed from. */
+  clip_ref?: string | null;
   latency_ms: number | null;
   tool_calls: { name: string; args: Record<string, unknown> }[];
   reviewed_at: string | null;
@@ -292,3 +297,27 @@ export type InvestigationEvent =
   | { type: "progress"; step: string; label: string; tool?: string; args?: Record<string, unknown> }
   | { type: "result"; incident: Incident; cached: boolean }
   | { type: "error"; message: string };
+
+/** A clip in the bucket's demo/ folder, with its settings file and its analysed result. */
+export interface DemoClip {
+  object: string;
+  name: string;
+  kind: CameraKind;
+  size: number;
+  updated: string;
+  receipt: ReceiptLine[];
+  zones: ZoneHint[];
+  expected: VerdictKind | null;
+  cameras: string[];
+  result: {
+    incident_id: string;
+    verdict: VerdictKind;
+    confidence: number;
+    status: IncidentStatus;
+    analysed_at: string;
+    /** Clip second the Monitor shows the verdict at. */
+    alert_at: number;
+  } | null;
+  /** Whether the result matches `expected` (null when either is missing). */
+  matches: boolean | null;
+}
