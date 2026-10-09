@@ -53,7 +53,9 @@ def repo() -> MemoryRepo:
 @pytest.fixture
 def settings() -> Settings:
     return Settings(gemini_api_key="test-key", investigator_model="test-model", gemini_model="test-model",
-                    fallback_models=(), auth_secret="")
+                    fallback_models=(), auth_secret="",
+                    # Pinned so a developer's api/.env (e.g. DEMO_CLIP_UPLOADS=off) can't change test results
+                    demo_clip_uploads=True, demo_login=True)
 
 
 @pytest.fixture

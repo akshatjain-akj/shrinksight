@@ -110,7 +110,7 @@ def test_uploads_are_refused_when_switched_off(api):
 
 
 def test_the_demo_account_cannot_change_the_footage(api):
-    main.app.state.settings = Settings(auth_secret="test-secret")
+    main.app.state.settings = Settings(auth_secret="test-secret", demo_clip_uploads=True, demo_login=True)
     put(main.app.state.demo_store, "demo/floor/a.mp4")
     headers = {"authorization": f"Bearer {api.post('/api/session/demo').json()['token']}"}
 

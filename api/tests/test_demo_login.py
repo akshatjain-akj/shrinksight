@@ -4,7 +4,8 @@ from app.seed import DEMO_EMAIL
 
 
 def _settings(**extra) -> Settings:
-    return Settings(auth_secret="test-secret", **extra)
+    # Pinned so a developer's api/.env (DEMO_LOGIN, DEMO_CLIP_UPLOADS) can't change test results
+    return Settings(**{"auth_secret": "test-secret", "demo_login": True, "demo_clip_uploads": True, **extra})
 
 
 def test_enter_the_demo_store_signs_in_as_a_full_manager_without_a_password(api):
