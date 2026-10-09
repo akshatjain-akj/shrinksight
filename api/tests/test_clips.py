@@ -200,3 +200,15 @@ def test_demo_incidents_never_expire():
 
     assert not is_expired({"id": "inc-1", "source": "demo", "created_at": "2020-01-01T00:00:00Z",
                            "verdict": {"verdict": "BENIGN"}})
+
+
+def test_the_listing_refreshes_after_a_change_even_right_after_boot(monkeypatch):
+    # time.monotonic() is close to 0 on a freshly booted machine; invalidate() must still force a re-list.
+    monkeypatch.setattr(demo.time, "monotonic", lambda: 5.0)
+    store = demo.MemoryDemoStore()
+    listing = demo.CachedListing()
+    assert listing.get(store) == []
+    store.save("demo/floor/a.mp4", b"x", "video/mp4", {})
+    assert listing.get(store) == []  # cached
+    listing.invalidate()
+    assert [c.object for c in listing.get(store)] == ["demo/floor/a.mp4"]

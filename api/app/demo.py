@@ -162,7 +162,8 @@ class CachedListing:
 
     def __init__(self, ttl_s: int = LIST_TTL_S) -> None:
         self._ttl = ttl_s
-        self._at = 0.0
+        # -inf, not 0: monotonic time starts near 0 on a freshly booted machine (CI runners, a new WSL session)
+        self._at = float("-inf")
         self._clips: list[DemoClip] = []
         self._store: object | None = None
         self._lock = threading.Lock()
@@ -177,7 +178,7 @@ class CachedListing:
 
     def invalidate(self) -> None:
         with self._lock:
-            self._at = 0.0
+            self._at = float("-inf")
 
 
 def clean_sidecar(raw: dict) -> dict:
