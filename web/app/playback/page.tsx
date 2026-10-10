@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import LiveScan, { type ScanReading } from "@/components/LiveScan";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL, clipSeconds } from "@/lib/format";
@@ -94,6 +94,8 @@ export default function PlaybackPage() {
   const [applied, setApplied] = useState({ range: "24h" as Range, cameraId: "all", eventType: "all" as EventFilter });
   const [picked, setPicked] = useState<string | null>(null);
   const [scan, setScan] = useState<ScanReading[]>([]);
+  const [aspect, setAspect] = useState<number | null>(null);
+  const playerRef = useRef<HTMLElement>(null);
   const { data: rules } = useRules();
 
   const results = useMemo(() => {
@@ -119,7 +121,16 @@ export default function PlaybackPage() {
 
   useEffect(() => {
     setScan([]);
+    setAspect(null);
   }, [selected?.id]);
+
+  // On a phone the player sits above the results: picking one brings the player back into view.
+  const pick = (id: string) => {
+    setPicked(id);
+    if (!window.matchMedia("(max-width: 900px)").matches) return;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    playerRef.current?.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "start" });
+  };
 
   const noteScan = (reading: ScanReading) => {
     setScan((current) => {
@@ -193,7 +204,7 @@ export default function PlaybackPage() {
                 type="button"
                 className={`playback-tile camera-${incident.camera_kind}`}
                 aria-pressed={selected?.id === incident.id}
-                onClick={() => setPicked(incident.id)}
+                onClick={() => pick(incident.id)}
               >
                 <span className="wall-tag">{VERDICT_LABEL[incident.verdict.verdict]}</span>
                 <span className="playback-meta">
@@ -204,7 +215,7 @@ export default function PlaybackPage() {
           </div>
         </section>
 
-        <section className="card playback-player" aria-labelledby="player-title">
+        <section ref={playerRef} className="card playback-player" aria-labelledby="player-title">
           <h2 id="player-title">Playback</h2>
           {!selected && <p className="muted">Select a result to see the timeline.</p>}
           {selected && (
@@ -213,7 +224,11 @@ export default function PlaybackPage() {
                 <strong>{selected.camera_name}</strong>
                 <span className="muted"> · {clock(selected.created_at)}</span>
               </p>
-              <div className={`playback-stage camera-${selected.camera_kind}`}>
+              <div
+                className={`playback-stage camera-${selected.camera_kind}`}
+                // Fit the stage to the clip (portrait phone clips included), within sensible bounds.
+                style={aspect ? { aspectRatio: String(Math.min(16 / 9, Math.max(9 / 16, aspect))) } : undefined}
+              >
                 {clipUrl && store && store.cameras.find((item) => item.id === selected.camera_id) && (
                   <LiveScan
                     key={clipUrl}
@@ -223,6 +238,7 @@ export default function PlaybackPage() {
                     rules={rules ?? []}
                     controls
                     onScan={noteScan}
+                    onAspect={setAspect}
                   />
                 )}
                 {!clipUrl && selected.clip_ref && <p className="playback-empty">Loading the demo clip…</p>}

@@ -608,7 +608,7 @@ export default function InvestigatePage() {
               )}
             </section>
 
-            {clip && camera && zoneState && (
+            {clip && clipUrl && camera && zoneState && (
               <section className="card stack" aria-labelledby="step-zones">
                 <h2 id="step-zones">
                   3 · {isCheckout ? "Where are the items, the scanner and the bagging area?" : "Where are the zones?"}
@@ -617,7 +617,7 @@ export default function InvestigatePage() {
                   Works from any camera angle: mark where things are in <em>this</em> picture, or let Gemini suggest it.
                   The zones are drawn on the stills Gemini sees.
                 </p>
-                <ZoneMarker camera={camera} frame={frame} frameError={frameError} state={zoneState} onChange={setZoneState} />
+                <ZoneMarker camera={camera} clipUrl={clipUrl} frame={frame} frameError={frameError} state={zoneState} onChange={setZoneState} />
                 {isCheckout && (
                   <ScannerPhoto
                     cameraId={camera.id}

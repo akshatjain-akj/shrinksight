@@ -117,6 +117,7 @@ export default function LiveScan({
   loop = false,
   onScan,
   onTime,
+  onAspect,
   tuning = DEFAULT_TUNING,
 }: {
   src: string;
@@ -129,6 +130,8 @@ export default function LiveScan({
   onScan?: (reading: ScanReading) => void;
   /** The video's current time (seconds), e.g. for demo mode's alert-once. */
   onTime?: (seconds: number) => void;
+  /** The clip's width / height once known, so the page can size the player to it. */
+  onAspect?: (ratio: number) => void;
   /** The camera's auto-tuned gate (live from Firestore). */
   tuning?: EdgeTuning;
 }) {
@@ -318,6 +321,14 @@ export default function LiveScan({
         loop={loop}
         controls={controls}
         onTimeUpdate={onTime ? (event) => onTime(event.currentTarget.currentTime) : undefined}
+        onLoadedMetadata={
+          onAspect
+            ? (event) => {
+                const { videoWidth, videoHeight } = event.currentTarget;
+                if (videoWidth && videoHeight) onAspect(videoWidth / videoHeight);
+              }
+            : undefined
+        }
         aria-label={`${camera.name} live scan`}
       />
       <canvas ref={canvasRef} className="live-scan-overlay" />
