@@ -670,8 +670,14 @@ button.chip[aria-pressed="true"] {
   text-shadow: 0 1px 2px #000;
   pointer-events: none;
 }
+/* Playback: the HUD sits at the top, clear of the native controls. */
 .playback-stage .live-scan-hud {
-  bottom: 2.4rem;
+  top: 0.4rem;
+  bottom: auto;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .camera-checkout {
   background:
@@ -2075,9 +2081,6 @@ table.compare {
   .landing h1 {
     max-width: none;
   }
-  .playback {
-    grid-template-columns: 1fr;
-  }
   .data-flow,
   .store-map {
     grid-template-columns: 1fr;
@@ -2151,9 +2154,19 @@ table.compare {
 .playback-player .playback-stage {
   position: relative;
   aspect-ratio: 16 / 9;
+  max-height: 70vh;
   border-radius: var(--radius);
   margin-bottom: 0.75rem;
   overflow: hidden;
+  background: #000;
+}
+/* Show the whole clip, not a crop; the overlay canvas has the video's own size, so it stays aligned. */
+.playback-stage .camera-video,
+.playback-stage .live-scan-overlay {
+  object-fit: contain;
+}
+.playback-stage .camera-video {
+  pointer-events: auto;
 }
 .playback-heading {
   margin-top: 0;
@@ -2181,6 +2194,51 @@ table.compare {
   list-style: none;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+/* Playback on a phone: player first and full width, results as a swipe strip below it. */
+@media (max-width: 900px) {
+  .playback {
+    grid-template-columns: 1fr;
+  }
+  .playback-player {
+    order: -1;
+    scroll-margin-top: 4.5rem;
+    padding: 0.85rem;
+  }
+  .playback-grid {
+    display: flex;
+    gap: 0.6rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    padding-bottom: 0.4rem;
+  }
+  .playback-tile {
+    flex: 0 0 min(72%, 260px);
+    scroll-snap-align: start;
+  }
+  .playback-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .playback-filters select {
+    min-width: 0;
+    width: 100%;
+  }
+  .playback-filters .btn {
+    grid-column: 1 / -1;
+  }
+  .playback-stage .live-scan-hud {
+    font-size: 0.62rem;
+  }
+  .play-mark {
+    min-width: 10px;
+  }
+  .playback-events {
+    max-height: 12rem;
+    overflow-y: auto;
+  }
 }
 .settings-card {
   background: var(--surface);
@@ -2608,11 +2666,18 @@ table.compare {
   touch-action: none;
   user-select: none;
 }
-.zone-stage img {
+.zone-stage:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.zone-stage img,
+.zone-stage video {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: fill;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 .zone-stage svg {
   position: absolute;
@@ -2621,25 +2686,62 @@ table.compare {
   height: 100%;
 }
 .zone-poly {
-  stroke-width: 0.5;
-  stroke-dasharray: 2 1.2;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
   cursor: pointer;
   vector-effect: non-scaling-stroke;
 }
 .zone-poly.is-active {
   stroke-width: 3;
   stroke-dasharray: none;
+  cursor: move;
 }
-.zone-handle {
-  stroke: #0b1220;
-  stroke-width: 0.4;
-  cursor: grab;
-}
-.zone-handle:active {
+.zone-stage.is-dragging,
+.zone-stage.is-dragging * {
   cursor: grabbing;
+}
+/* Corner and side handles: HTML, so they stay round however the frame is stretched. */
+.zone-handle {
+  position: absolute;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #0b1220;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 0.85);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  touch-action: none;
+}
+.zone-handle-edge {
+  z-index: 1;
+  width: 22px;
+  height: 10px;
+  border-radius: 999px;
+}
+/* A finger-sized hit area around each handle. */
+.zone-handle::before {
+  content: "";
+  position: absolute;
+  inset: -13px;
+  border-radius: 50%;
+}
+.zone-handle-edge::before {
+  inset: -14px -8px;
+}
+@media (pointer: coarse) {
+  .zone-handle {
+    width: 24px;
+    height: 24px;
+  }
+  .zone-handle-edge {
+    width: 28px;
+    height: 12px;
+  }
 }
 .zone-tag {
   position: absolute;
+  z-index: 3;
   transform: translateY(-100%);
   color: #0b1220;
   font-size: 0.7rem;

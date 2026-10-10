@@ -61,18 +61,113 @@ export interface Frame {
   height: number;
   /** Clip length in seconds, if the browser could tell. */
   duration: number | null;
+  /** Where in the clip the frame was taken (seconds). */
+  time: number;
+  /**
+   * The browser plays the clip but drew no picture of it (seen on Android Chrome with some phone clips). The zone
+   * marker then shows the clip itself instead, and Gemini can't be asked to suggest zones from this frame.
+   */
+  blank: boolean;
 }
 
 /** The frame used for marking zones: half a second in, so the first black frame is skipped. */
 export async function firstFrame(url: string): Promise<Frame> {
   const video = await openVideo(url);
-  await seek(video, Math.min(0.5, (video.duration || 1) / 4));
+  const time = Math.min(0.5, (video.duration || 1) / 4);
+  await seek(video, time);
   const canvas = canvasFor(video);
   canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const blob = await toJpeg(canvas, 0.8);
   const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
   video.removeAttribute("src");
-  return { blob, dataUrl: canvas.toDataURL("image/jpeg", 0.8), width: canvas.width, height: canvas.height, duration };
+  // Only a black frame takes the phone path below; every other clip is read exactly as before.
+  if (isBlank(canvas)) {
+    const retried = await frameInPage(url, duration).catch(() => null);
+    if (retried) return retried;
+  }
+  const blob = await toJpeg(canvas, 0.8);
+  return {
+    blob,
+    dataUrl: canvas.toDataURL("image/jpeg", 0.8),
+    width: canvas.width,
+    height: canvas.height,
+    duration,
+    time,
+    blank: isBlank(canvas),
+  };
+}
+
+/** True when a drawn frame is (almost) all black: the browser gave us no picture. */
+function isBlank(canvas: HTMLCanvasElement): boolean {
+  try {
+    const probe = document.createElement("canvas");
+    probe.width = 16;
+    probe.height = 16;
+    const ctx = probe.getContext("2d", { willReadFrequently: true })!;
+    ctx.drawImage(canvas, 0, 0, 16, 16);
+    const data = ctx.getImageData(0, 0, 16, 16).data;
+    for (let i = 0; i < data.length; i += 4) if (Math.max(data[i], data[i + 1], data[i + 2]) >= 12) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type FrameVideo = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: () => void) => number;
+};
+
+/** Resolves once the frame at the current time is decoded (or after a short wait where that can't be told). */
+function frameDrawn(video: HTMLVideoElement): Promise<void> {
+  const v = video as FrameVideo;
+  if (!v.requestVideoFrameCallback) return new Promise((resolve) => setTimeout(resolve, 150));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 400);
+    v.requestVideoFrameCallback!(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Fallback for a black first frame. Mobile browsers often don't decode a detached video that never played, so this
+ * one is put in the page (invisible), played for a moment, and read only once each frame is really drawn. Tries a
+ * few moments of the clip; null if every one is still black.
+ */
+async function frameInPage(url: string, duration: number | null): Promise<Frame | null> {
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.setAttribute("playsinline", "");
+  video.preload = "auto";
+  video.setAttribute("aria-hidden", "true");
+  video.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1";
+  document.body.appendChild(video);
+  try {
+    video.src = url;
+    await once(video, "loadeddata");
+    await video.play().catch(() => undefined);
+    video.pause();
+    const length = duration ?? 4;
+    const canvas = canvasFor(video);
+    const ctx = canvas.getContext("2d")!;
+    for (const t of [...new Set([Math.min(0.5, length / 4), Math.min(1, length / 2), length * 0.25])]) {
+      const drawn = frameDrawn(video);
+      video.currentTime = t;
+      await once(video, "seeked");
+      await drawn;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (isBlank(canvas)) continue;
+      const blob = await toJpeg(canvas, 0.8);
+      return { blob, dataUrl: canvas.toDataURL("image/jpeg", 0.8), width: canvas.width, height: canvas.height, duration, time: t, blank: false };
+    }
+    return null;
+  } finally {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    video.remove();
+  }
 }
 
 // The item pile gets the biggest close-up: it is where Gemini counts every item, including flat or thin ones.
