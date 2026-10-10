@@ -8,7 +8,8 @@ import { PersonTracker } from "@/lib/tier1/tracks";
 import { privacyBoxes } from "@/lib/tier1/privacy";
 import { PoseSmoother } from "@/lib/tier1/oneEuro";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision";
-import type { Camera, Rule, Zone } from "@/lib/types";
+import { zonesForReplay } from "@/lib/tier1/zones";
+import type { Camera, Rule, Zone, ZoneHint } from "@/lib/types";
 
 const BONES: [number, number][] = [
   [0, 11], [0, 12],
@@ -118,6 +119,9 @@ export default function LiveScan({
   onScan,
   onTime,
   onAspect,
+  onVideo,
+  savedZones,
+  scoreOnly = false,
   tuning = DEFAULT_TUNING,
 }: {
   src: string;
@@ -132,6 +136,15 @@ export default function LiveScan({
   onTime?: (seconds: number) => void;
   /** The clip's width / height once known, so the page can size the player to it. */
   onAspect?: (ratio: number) => void;
+  /** The video element, so a page can seek it (e.g. Playback's clickable Gemini timeline). */
+  onVideo?: (video: HTMLVideoElement | null) => void;
+  /** Zones saved with this incident (marked for this clip); used instead of the camera's layout when present. */
+  savedZones?: ZoneHint[] | null;
+  /**
+   * Playback: Tier-1 only draws (skeleton, zones, score). Its own conclusions never show as text there, because the
+   * page shows the stored Gemini result.
+   */
+  scoreOnly?: boolean;
   /** The camera's auto-tuned gate (live from Firestore). */
   tuning?: EdgeTuning;
 }) {
@@ -142,6 +155,11 @@ export default function LiveScan({
   const hudRef = useRef<HTMLSpanElement>(null);
   const cameraRef = useRef(camera);
   const zonesRef = useRef(zones);
+  const savedZonesRef = useRef(savedZones);
+  savedZonesRef.current = savedZones;
+  const scoreOnlyRef = useRef(scoreOnly);
+  scoreOnlyRef.current = scoreOnly;
+  const zonesKey = JSON.stringify(savedZones ?? []);
   const rulesRef = useRef(rules);
   cameraRef.current = camera;
   zonesRef.current = zones;
@@ -168,7 +186,10 @@ export default function LiveScan({
     let facesReady = false;
 
     const active = cameraRef.current;
-    const shapes = polygonsForCamera(active.id, zonesRef.current.filter((zone) => active.zone_ids.includes(zone.id)));
+    const shapes = zonesForReplay(
+      savedZonesRef.current,
+      polygonsForCamera(active.id, zonesRef.current.filter((zone) => active.zone_ids.includes(zone.id))),
+    );
     const tracker = new PersonTracker(() => new Tier1Engine(active.kind, shapes, rulesRef.current));
     tracker.setTuning(tuningRef.current);
     trackerRef.current = tracker;
@@ -296,7 +317,9 @@ export default function LiveScan({
       }
       if (frame % 4 === 0) {
         const score = watched.tick.smoothed.toFixed(2);
-        hud.textContent = hit?.detail || watched.tick.reason || (lastPoses.length ? `Watching · ${score}` : "Waiting for a person");
+        hud.textContent = scoreOnlyRef.current
+          ? `Tier-1 on-device · ${lastPoses.length ? `score ${score}` : "waiting for a person"}`
+          : hit?.detail || watched.tick.reason || (lastPoses.length ? `Watching · ${score}` : "Waiting for a person");
       }
     };
     raf = requestAnimationFrame(loop);
@@ -306,12 +329,17 @@ export default function LiveScan({
       cancelAnimationFrame(raf);
       releaseModels();
     };
-  }, [src, camera.id]);
+    // zonesKey: a different saved layout restarts the scan with it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, camera.id, zonesKey]);
 
   return (
     <div className="live-scan">
       <video
-        ref={videoRef}
+        ref={(element) => {
+          videoRef.current = element;
+          onVideo?.(element);
+        }}
         className="camera-video"
         src={src}
         crossOrigin="anonymous"
@@ -332,7 +360,7 @@ export default function LiveScan({
         aria-label={`${camera.name} live scan`}
       />
       <canvas ref={canvasRef} className="live-scan-overlay" />
-      <span ref={hudRef} className="live-scan-hud">Starting scan</span>
+      <span ref={hudRef} className="live-scan-hud">{scoreOnly ? "Tier-1 on-device · starting" : "Starting scan"}</span>
     </div>
   );
 }

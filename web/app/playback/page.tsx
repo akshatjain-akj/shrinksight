@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import LiveScan, { type ScanReading } from "@/components/LiveScan";
+import GeminiMarks from "@/components/GeminiMarks";
+import LiveScan from "@/components/LiveScan";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL, clipSeconds } from "@/lib/format";
 import { useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useDemoClipUrl } from "@/lib/useClip";
+import { flaggedItem } from "@/lib/marks";
+import { fitPlayer } from "@/lib/player";
 import {
   forDemoMode,
   useDemoIncidents,
@@ -55,14 +58,7 @@ function markColor(event: string, verdict: VerdictKind): "danger" | "ok" | "info
   return "info";
 }
 
-function clipStamp(seconds: number): string {
-  const whole = Math.max(0, seconds);
-  const minutes = Math.floor(whole / 60);
-  const rest = whole - minutes * 60;
-  return `${String(minutes).padStart(2, "0")}:${rest.toFixed(1).padStart(4, "0")}`;
-}
-
-function Timeline({ incident }: { incident: Incident }) {
+function Timeline({ incident, onSeek }: { incident: Incident; onSeek?: (t: string) => void }) {
   const events = incident.verdict.timeline ?? [];
   const span = Math.max(8, ...events.map((event) => clipSeconds(event.t)), 1);
   if (events.length === 0) {
@@ -77,11 +73,15 @@ function Timeline({ incident }: { incident: Incident }) {
       {events.map((event, index) => {
         const at = clipSeconds(event.t) / span;
         return (
-          <span
+          <button
+            type="button"
             key={`${event.t}-${index}`}
             className={`play-mark tone-${markColor(event.event, incident.verdict.verdict)}`}
             style={{ left: `${Math.min(92, at * 100)}%`, width: "6%" }}
             title={`${event.t} ${event.event}`}
+            aria-label={`Jump to ${event.t}: ${event.event}`}
+            onClick={() => onSeek?.(event.t)}
+            disabled={!onSeek}
           />
         );
       })}
@@ -118,7 +118,9 @@ export default function PlaybackPage() {
   const [eventType, setEventType] = useState<EventFilter>("all");
   const [applied, setApplied] = useState({ range: "24h" as Range, cameraId: "all", eventType: "all" as EventFilter });
   const [picked, setPicked] = useState<string | null>(null);
-  const [scan, setScan] = useState<ScanReading[]>([]);
+  // The playing clip's time and element: Gemini's boxes follow it and the timeline seeks it.
+  const [playhead, setPlayhead] = useState<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [aspect, setAspect] = useState<number | null>(null);
   const playerRef = useRef<HTMLElement>(null);
   const { data: rules } = useRules();
@@ -145,9 +147,18 @@ export default function PlaybackPage() {
   const clipUrl = demoClipUrl ?? local.url;
 
   useEffect(() => {
-    setScan([]);
+    setPlayhead(null);
     setAspect(null);
   }, [selected?.id]);
+
+  const focus = selected ? flaggedItem(selected.verdict.seen_items) : null;
+  const seek = (t: string) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = clipSeconds(t);
+    video.pause();
+    setPlayhead(video.currentTime);
+  };
 
   // On a phone the player sits above the results: picking one brings the player back into view.
   const pick = (id: string) => {
@@ -155,15 +166,6 @@ export default function PlaybackPage() {
     if (!window.matchMedia("(max-width: 900px)").matches) return;
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     playerRef.current?.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "start" });
-  };
-
-  const noteScan = (reading: ScanReading) => {
-    setScan((current) => {
-      const last = current[current.length - 1];
-      if (last && reading.t + 0.4 < last.t) return [reading];
-      if (last?.detail === reading.detail) return current;
-      return [...current, reading].slice(-8);
-    });
   };
 
   return (
@@ -260,8 +262,8 @@ export default function PlaybackPage() {
               </p>
               <div
                 className={`playback-stage camera-${selected.camera_kind}`}
-                // Fit the stage to the clip (portrait phone clips included), within sensible bounds.
-                style={aspect ? { aspectRatio: String(Math.min(16 / 9, Math.max(9 / 16, aspect))) } : undefined}
+                // The stage takes the clip's exact shape (portrait included), so overlays line up with no blank space.
+                style={fitPlayer(aspect)}
               >
                 {clipUrl && store && store.cameras.find((item) => item.id === selected.camera_id) && (
                   <LiveScan
@@ -271,10 +273,16 @@ export default function PlaybackPage() {
                     zones={store.zones}
                     rules={rules ?? []}
                     controls
-                    onScan={noteScan}
+                    scoreOnly
+                    savedZones={selected.zones_used}
+                    onTime={setPlayhead}
+                    onVideo={(video) => {
+                      videoRef.current = video;
+                    }}
                     onAspect={setAspect}
                   />
                 )}
+                {clipUrl && <GeminiMarks items={selected.verdict.seen_items} focus={focus} playhead={playhead ?? 0} />}
                 {!clipUrl && selected.clip_ref && <p className="playback-empty">Loading the demo clip…</p>}
                 {!clipUrl && !selected.clip_ref && (
                   <p className="playback-empty">
@@ -287,43 +295,29 @@ export default function PlaybackPage() {
                 <p className="muted small">Demo clip · analysed once by Gemini; this is its stored result.</p>
               )}
               {local.expiresAt && <p className="muted small">{localClipNote(local.expiresAt)}</p>}
-              {clipUrl ? (
-                <>
-                  <p>{scan.at(-1)?.detail ?? "Scanning this clip…"}</p>
-                  <div className="play-track" aria-label="Scan timeline">
-                    {scan.map((reading, index) => {
-                      const span = Math.max(6, ...scan.map((item) => item.t), 1);
-                      return (
-                        <span
-                          key={`${reading.t}-${index}`}
-                          className="play-mark tone-danger"
-                          style={{ left: `${Math.min(92, (reading.t / span) * 100)}%`, width: "6%" }}
-                          title={`${clipStamp(reading.t)} ${reading.detail}`}
-                        />
-                      );
-                    })}
-                  </div>
-                  <ul className="playback-events">
-                    {scan.map((reading, index) => (
-                      <li key={`${reading.t}-${index}`}>
-                        <time>{clipStamp(reading.t)}</time> {reading.detail}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <>
-                  <p>{selected.verdict.reason}</p>
-                  <Timeline incident={selected} />
-                  <ul className="playback-events">
-                    {(selected.verdict.timeline ?? []).map((event, index) => (
-                      <li key={`${event.t}-${index}`}>
-                        <time>{event.t}</time> {event.event}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
+              {/* Always the stored Gemini result. Tier-1 on the video only draws; it never decides what is shown here. */}
+              <p className="playback-verdict">
+                <span className={`chip tone-${markColor("", selected.verdict.verdict) === "danger" ? "danger" : "accent"}`}>
+                  {VERDICT_LABEL[selected.verdict.verdict]} {Math.round(selected.verdict.confidence * 100)}%
+                </span>{" "}
+                <span className="muted small">Gemini’s stored result</span>
+              </p>
+              <p>{selected.verdict.reason}</p>
+              <Timeline incident={selected} onSeek={clipUrl ? seek : undefined} />
+              <ul className="playback-events">
+                {(selected.verdict.timeline ?? []).map((event, index) => (
+                  <li key={`${event.t}-${index}`}>
+                    {clipUrl ? (
+                      <button type="button" className="linkish" onClick={() => seek(event.t)}>
+                        <time>{event.t}</time>
+                      </button>
+                    ) : (
+                      <time>{event.t}</time>
+                    )}{" "}
+                    {event.event}
+                  </li>
+                ))}
+              </ul>
               <Link href={`/incident?id=${encodeURIComponent(selected.id)}`} className="btn btn-primary">
                 Open the incident
               </Link>

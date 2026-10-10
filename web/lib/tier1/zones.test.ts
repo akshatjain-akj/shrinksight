@@ -79,3 +79,19 @@ test("zones saved with a demo clip land on this camera's zones by id, else by ki
   assert.equal(out.descriptions["z-scan-2"], "paper square");
   assert.equal(out.shapes[2].polygon.length, 0);
 });
+
+test("replaying Tier-1 uses the zones saved with the incident, else the camera layout", async () => {
+  const { zonesForReplay } = await import("./zones.ts");
+  const layout = [{ id: "z-scan-1", name: "Scanner", kind: "scanner", polygon: rect(0.1, 0.1, 0.2, 0.2) }];
+  const saved = [
+    { zone_id: "z-scan-1", kind: "scanner" as const, polygon: [{ x: 0.5, y: 0.5 }, { x: 0.7, y: 0.5 }, { x: 0.7, y: 1.2 }], description: "paper square" },
+    { zone_id: "z-bag-1", kind: "bagging" as const, polygon: [], description: "" },
+  ];
+
+  const used = zonesForReplay(saved, layout);
+  assert.equal(used.length, 1);
+  assert.equal(used[0].name, "paper square");
+  assert.equal(used[0].polygon[2].y, 1);
+  assert.equal(zonesForReplay([], layout), layout);
+  assert.equal(zonesForReplay(undefined, layout), layout);
+});

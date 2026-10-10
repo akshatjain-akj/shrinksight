@@ -2183,7 +2183,22 @@ table.compare {
   position: absolute;
   top: 0;
   bottom: 0;
+  border: 0;
+  padding: 0;
   border-radius: 999px;
+}
+button.play-mark:not(:disabled) {
+  cursor: pointer;
+}
+button.play-mark:focus-visible {
+  outline: 2px solid var(--accent, #38bdf8);
+  outline-offset: 2px;
+}
+.playback-verdict {
+  margin: 0 0 0.35rem;
+}
+.playback-stage .bbox {
+  z-index: 3;
 }
 .play-mark.tone-danger { background: #f87171; }
 .play-mark.tone-ok { background: #34d399; }

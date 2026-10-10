@@ -124,6 +124,11 @@ erDiagram
   verdicts (a benign clip shows its badge on the tile). Playback offers "Show all demo results" before anything has
   flagged. A new sign-in or incognito window starts fresh.
 - **Playback / incident page:** a demo incident plays its `clip_ref` with the time-synced Gemini boxes.
+- **Playback shows only stored Gemini results.** Any clip it can play (demo clip, or this device's copy of an
+  Investigate or Live edge clip) gets the Tier-1 overlay as a picture only (skeleton, zones, "Tier-1 on-device · score"),
+  drawn with the zones saved on the incident (`zonesForReplay`). The verdict, reason, clickable timeline and boxes
+  (`components/GeminiMarks.tsx`, shared with the incident page) all come from the stored analysis. Players take the
+  clip's exact shape (`lib/player.ts`), so portrait clips get a narrower centred player and overlays line up.
 - **Switch:** `DEMO_CLIP_UPLOADS=off` disables saving and deleting demo clips (for the submission); the demo account
   can never do either.
 

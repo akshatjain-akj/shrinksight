@@ -169,3 +169,18 @@ export function actionCrop(zones: ZoneShape[], padding = 0.3, maxArea = 0.7): Re
 export function rectToBox(r: Rect): [number, number, number, number] {
   return [Math.round(r.y * 1000), Math.round(r.x * 1000), Math.round((r.y + r.h) * 1000), Math.round((r.x + r.w) * 1000)];
 }
+
+/**
+ * Zones for replaying Tier-1 on a stored clip: the ones saved with that incident (marked for this very clip) when
+ * there are any, else the camera's layout. Saved zones are what the analysis used, so the overlay lines up with them.
+ */
+export function zonesForReplay(saved: ZoneHint[] | null | undefined, cameraShapes: ZoneShape[]): ZoneShape[] {
+  const usable = (saved ?? []).filter((hint) => (hint.polygon?.length ?? 0) >= 3);
+  if (!usable.length) return cameraShapes;
+  return usable.map((hint) => ({
+    id: hint.zone_id,
+    name: hint.description || hint.kind,
+    kind: hint.kind,
+    polygon: hint.polygon.map((p) => ({ x: clamp01(p.x), y: clamp01(p.y) })),
+  }));
+}

@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { clipSeconds, dateTime, inr } from "@/lib/format";
-import { flaggedItem, visibleMarks } from "@/lib/marks";
+import { flaggedItem } from "@/lib/marks";
+import { fitPlayer } from "@/lib/player";
+import GeminiMarks from "./GeminiMarks";
 import type { ConfirmReason, DismissReason, Incident, SeenItem, TokenUsage } from "@/lib/types";
 import AskPanel from "./AskPanel";
 import { ErrorNotice, StatusPill, VerdictBadge } from "./ui";
@@ -111,10 +113,9 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
   focus: SeenItem | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
-  const [aspect, setAspect] = useState(16 / 9);
+  const [aspect, setAspect] = useState<number | null>(null);
   // Where the video is (seconds); boxes are drawn only around their item's moment. Null without a video.
   const [playhead, setPlayhead] = useState<number | null>(videoUrl ? 0 : null);
-  const marks = visibleMarks(incident.verdict.seen_items, focus, videoUrl ? playhead : null);
   const hasBoxes = incident.verdict.seen_items.some((item) => item.box_2d?.length === 4);
   const note = videoUrl
     ? null
@@ -124,7 +125,7 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
 
   return (
     <div>
-      <div className={`evidence${videoUrl ? "" : " evidence-placeholder"}`} style={videoUrl ? { aspectRatio: aspect } : undefined}>
+      <div className={`evidence${videoUrl ? "" : " evidence-placeholder"}`} style={videoUrl ? fitPlayer(aspect) : undefined}>
         {videoUrl && (
           <video
             ref={videoRef}
@@ -142,25 +143,7 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
             onSeeked={(e) => setPlayhead(e.currentTarget.currentTime)}
           />
         )}
-        {marks.map((item) => {
-          const [ymin, xmin, ymax, xmax] = item.box_2d;
-          return (
-            <div
-              key={`${item.t}-${item.description}`}
-              className={`bbox${item === focus ? "" : " other"}`}
-              style={{
-                top: `${ymin / 10}%`,
-                left: `${xmin / 10}%`,
-                height: `${(ymax - ymin) / 10}%`,
-                width: `${(xmax - xmin) / 10}%`,
-              }}
-            >
-              <span>
-                {item.description} · {item.t}
-              </span>
-            </div>
-          );
-        })}
+        <GeminiMarks items={incident.verdict.seen_items} focus={focus} playhead={videoUrl ? playhead : null} />
         {note && <p className="evidence-note">{note}</p>}
       </div>
       {videoUrl && hasBoxes && (
