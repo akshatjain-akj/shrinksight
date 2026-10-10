@@ -3,9 +3,17 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
 import { readSession, subscribeSession } from "./session";
-import type { DemoClip } from "./types";
+import { addSighting, type DemoSighting } from "./demoAlerts";
+import type { DemoClip, Incident } from "./types";
 
-export { AlertOnce, forDemoMode } from "./demoAlerts";
+export {
+  ALERTING,
+  forDemoMode,
+  shouldAlert,
+  withDemoIncidents,
+  withSightings,
+  type DemoSighting,
+} from "./demoAlerts";
 
 /**
  * Demo mode: cameras on the Monitor loop their demo clips and demo-clip incidents are listed. On by default for the
@@ -73,4 +81,91 @@ export function useDemoClips(enabled: boolean) {
   }, [enabled, tick]);
 
   return { clips, uploads, error, reload: () => setTick((n) => n + 1) };
+}
+
+/** Every demo clip's stored result (they fall outside the newest-incidents window), refreshed every minute. */
+export function useDemoIncidents(enabled: boolean): Incident[] {
+  const [items, setItems] = useState<Incident[]>([]);
+  useEffect(() => {
+    if (!enabled) return;
+    let current = true;
+    const load = () =>
+      api
+        .demoIncidents()
+        .then((list) => current && setItems(list))
+        .catch(() => undefined);
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      current = false;
+      clearInterval(timer);
+    };
+  }, [enabled]);
+  return enabled ? items : NO_INCIDENTS;
+}
+
+const NO_INCIDENTS: Incident[] = [];
+
+/*
+ * What the Monitor wall has flagged during this sign-in. Kept in localStorage under a key tied to the session, so every
+ * tab shares it, while a new sign-in (or a new incognito window) starts fresh. The Monitor alerts once per clip per
+ * sign-in, and Playback lists exactly these demo incidents.
+ */
+const SEEN_PREFIX = "shrinksight.demoSeen.";
+const SEEN_EVENT = "shrinksight-demo-seen";
+const NONE: DemoSighting[] = [];
+let seenRaw: string | null | undefined;
+let seenSnapshot: DemoSighting[] = NONE;
+
+function seenKey(): string | null {
+  const session = readSession();
+  if (!session) return null;
+  return `${SEEN_PREFIX}${session.email}.${session.exp ?? session.token.slice(-12)}`;
+}
+
+export function readSightings(): DemoSighting[] {
+  if (typeof window === "undefined") return NONE;
+  const storageKey = seenKey();
+  const raw = storageKey ? localStorage.getItem(storageKey) : null;
+  if (raw !== seenRaw) {
+    seenRaw = raw;
+    try {
+      const parsed = raw ? (JSON.parse(raw) as DemoSighting[]) : NONE;
+      seenSnapshot = Array.isArray(parsed) ? parsed : NONE;
+    } catch {
+      seenSnapshot = NONE;
+    }
+  }
+  return seenSnapshot;
+}
+
+export function recordSighting(sighting: DemoSighting): boolean {
+  const storageKey = seenKey();
+  if (!storageKey) return false;
+  const current = readSightings();
+  const next = addSighting(current, sighting);
+  if (next === current) return false;
+  // Lists from earlier sign-ins are dropped so they never pile up.
+  for (const stale of Object.keys(localStorage)) {
+    if (stale.startsWith(SEEN_PREFIX) && stale !== storageKey) localStorage.removeItem(stale);
+  }
+  localStorage.setItem(storageKey, JSON.stringify(next));
+  window.dispatchEvent(new Event(SEEN_EVENT));
+  return true;
+}
+
+function subscribeSeen(onChange: () => void): () => void {
+  window.addEventListener(SEEN_EVENT, onChange);
+  // Another tab flagged a clip, or the sign-in changed.
+  window.addEventListener("storage", onChange);
+  const stopSession = subscribeSession(onChange);
+  return () => {
+    window.removeEventListener(SEEN_EVENT, onChange);
+    window.removeEventListener("storage", onChange);
+    stopSession();
+  };
+}
+
+export function useSightings(): DemoSighting[] {
+  return useSyncExternalStore(subscribeSeen, readSightings, () => NONE);
 }

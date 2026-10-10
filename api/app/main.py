@@ -841,6 +841,12 @@ def incidents(limit: int = Query(default=50, ge=1, le=100)) -> list[dict]:
     return [i.model_dump() for i in get_repo().incidents(limit)]
 
 
+@app.get("/api/demo/incidents")
+def demo_incidents() -> list[dict]:
+    """Every demo clip's stored result. Listed separately because they are older than the newest-50 incident window."""
+    return [i.model_dump() for i in get_repo().demo_incidents()]
+
+
 @app.get("/api/incidents/{incident_id}")
 def incident(incident_id: str) -> dict:
     found = get_repo().get_incident(incident_id)

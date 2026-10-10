@@ -10,7 +10,17 @@ import EdgeTuningBanner from "@/components/EdgeTuningBanner";
 import { armAlertSound, playAlertChime } from "@/lib/alertSound";
 import { toTuning, useEdgeConfig, useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useClipUrl } from "@/lib/useClip";
-import { AlertOnce, forDemoMode, useDemoClips, useDemoMode } from "@/lib/demoMode";
+import {
+  forDemoMode,
+  recordSighting,
+  shouldAlert,
+  useDemoClips,
+  useDemoIncidents,
+  useDemoMode,
+  useSightings,
+  withDemoIncidents,
+  withSightings,
+} from "@/lib/demoMode";
 import type { Camera, DemoClip, Incident, Rule, Zone } from "@/lib/types";
 
 type Filter = "all" | "review" | "rejected";
@@ -143,12 +153,19 @@ export default function MonitorPage() {
   const { data: allIncidents, error, live } = useIncidents();
   const [demoOn, setDemoOn] = useDemoMode();
   // Demo-clip incidents only show in demo mode.
-  const incidents = useMemo(() => (allIncidents ? forDemoMode(allIncidents, demoOn) : null), [allIncidents, demoOn]);
+  const sightings = useSightings();
+  const demoIncidents = useDemoIncidents(demoOn);
+  // Demo mode: demo-clip incidents appear once the wall has flagged them this session (alerting verdicts only),
+  // newest first, dated when they appeared. Off: no demo incidents at all.
+  const listed = useMemo(() => {
+    if (!allIncidents) return null;
+    return demoOn
+      ? withSightings(withDemoIncidents(allIncidents, demoIncidents), sightings)
+      : { items: forDemoMode(allIncidents, false), seenAt: new Map<string, number>() };
+  }, [allIncidents, demoOn, sightings, demoIncidents]);
+  const incidents = listed?.items ?? null;
   const { clips: demoClips } = useDemoClips(demoOn);
   const clipByObject = useMemo(() => new Map((demoClips ?? []).map((clip) => [clip.object, clip])), [demoClips]);
-  const alertsRef = useRef(new AlertOnce());
-  // Demo alerts this session, newest first: the incident jumps to the top of the list when its clip reaches it.
-  const [demoAlerts, setDemoAlerts] = useState<{ clip: string; incidentId: string; at: number }[]>([]);
   const { data: rules } = useRules();
   const [filter, setFilter] = useState<Filter>("all");
   const [cameraId, setCameraId] = useState<string | null>(null);
@@ -174,18 +191,16 @@ export default function MonitorPage() {
   const visible = useMemo(() => {
     const byFilter = (incident: Incident) =>
       filter === "all" || (filter === "review" ? incident.status === "NEEDS_REVIEW" : incident.status === "REJECTED");
-    const shown = (incidents ?? []).filter((incident) => byFilter(incident) && (!cameraId || incident.camera_id === cameraId));
-    const order = new Map(demoAlerts.map((alert, index) => [alert.incidentId, index]));
-    return [...shown].sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity));
-  }, [incidents, filter, cameraId, demoAlerts]);
-  const alertAt = useMemo(() => new Map(demoAlerts.map((alert) => [alert.incidentId, alert.at])), [demoAlerts]);
+    return (incidents ?? []).filter((incident) => byFilter(incident) && (!cameraId || incident.camera_id === cameraId));
+  }, [incidents, filter, cameraId]);
+  const alertAt = listed?.seenAt ?? new Map<string, number>();
 
   /** A looping demo tile reached its clip's analysed moment: show the verdict once per clip per session. */
   const onDemoTime = (clip: DemoClip | null, seconds: number) => {
     const result = clip?.result;
-    if (!clip || !result || !alertsRef.current.check(clip.object, result.alert_at, seconds)) return;
-    setDemoAlerts((prev) => [{ clip: clip.object, incidentId: result.incident_id, at: Date.now() }, ...prev]);
-    if (result.status === "NEEDS_REVIEW") playAlertChime();
+    if (!clip || !result || !shouldAlert(sightings, clip.object, result.alert_at, seconds)) return;
+    // Recording it adds the incident to the list; the list's "new alert" check plays the chime once.
+    recordSighting({ clip: clip.object, incidentId: result.incident_id, verdict: result.verdict, at: Date.now() });
   };
 
   const heard = useRef<Set<string> | null>(null);
@@ -266,7 +281,7 @@ export default function MonitorPage() {
                   active={activeId === camera.id}
                   demoOn={demoOn}
                   demoClip={camera.demo_clip ? clipByObject.get(camera.demo_clip) ?? null : null}
-                  alerted={Boolean(camera.demo_clip && demoAlerts.some((alert) => alert.clip === camera.demo_clip))}
+                  alerted={Boolean(camera.demo_clip && sightings.some((seen) => seen.clip === camera.demo_clip))}
                   onTime={(seconds) => onDemoTime(camera.demo_clip ? clipByObject.get(camera.demo_clip) ?? null : null, seconds)}
                   zones={store.zones}
                   rules={rules ?? []}

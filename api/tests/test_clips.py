@@ -212,3 +212,19 @@ def test_the_listing_refreshes_after_a_change_even_right_after_boot(monkeypatch)
     assert listing.get(store) == []  # cached
     listing.invalidate()
     assert [c.object for c in listing.get(store)] == ["demo/floor/a.mp4"]
+
+
+def test_demo_incidents_are_listed_even_when_older_than_the_newest_fifty(api):
+    put(main.app.state.demo_store, "demo/floor/aisle-hide.mp4")
+    main.app.state.gateway = FakeGateway([text(floor_json("CONCEALMENT", came_from="shelf", ended_in="concealed"))])
+    res = api.post("/api/investigate", files=[("clip", ("clip.mp4", b"z", "video/mp4"))],
+                   headers={"x-shrinksight-meta": meta_header(camera_id="cam-aisle-4",
+                                                              demo_clip="demo/floor/aisle-hide.mp4")})
+    demo_id = sse_events(res.text)[-1]["incident"]["id"]
+    demo_doc = api.repo.get_incident(demo_id)
+    demo_doc.created_at = "2020-01-01T00:00:00Z"  # far older than everything else
+    api.repo.save_incident(demo_doc)
+
+    assert demo_id not in {i["id"] for i in api.get("/api/incidents", params={"limit": 1}).json()}
+    listed = api.get("/api/demo/incidents").json()
+    assert [i["id"] for i in listed] == [demo_id] and listed[0]["clip_ref"] == "demo/floor/aisle-hide.mp4"

@@ -168,6 +168,7 @@ export const api = {
   clip: (cameraId: string) =>
     request<{ camera_id: string; url: string; expires_in: number }>(`/api/clips/${encodeURIComponent(cameraId)}`),
   demoClips: () => request<{ clips: DemoClip[]; uploads: boolean }>("/api/demo/clips"),
+  demoIncidents: () => request<Incident[]>("/api/demo/incidents"),
   demoClipUrl: (object: string) =>
     request<{ object: string; url: string; expires_in: number }>(`/api/demo/url?object=${encodeURIComponent(object)}`),
   deleteDemoClip: (object: string) =>

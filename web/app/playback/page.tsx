@@ -7,7 +7,14 @@ import { ErrorNotice, Skeletons } from "@/components/ui";
 import { VERDICT_LABEL, clipSeconds } from "@/lib/format";
 import { useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useDemoClipUrl } from "@/lib/useClip";
-import { forDemoMode, useDemoMode } from "@/lib/demoMode";
+import {
+  forDemoMode,
+  useDemoIncidents,
+  useDemoMode,
+  useSightings,
+  withDemoIncidents,
+  withSightings,
+} from "@/lib/demoMode";
 import { localClipNote, useLocalClip } from "@/lib/useLocalClip";
 import type { Incident, VerdictKind } from "@/lib/types";
 
@@ -86,8 +93,26 @@ export default function PlaybackPage() {
   const { store, error: storeError } = useStore();
   const { data: allIncidents, error } = useIncidents();
   const [demoOn] = useDemoMode();
-  // Demo-clip incidents (one per demo clip) are listed only in demo mode.
-  const incidents = useMemo(() => (allIncidents ? forDemoMode(allIncidents, demoOn) : null), [allIncidents, demoOn]);
+  const sightings = useSightings();
+  // Demo clips' results are often older than the newest-50 incident window, so they are fetched on their own.
+  const demoIncidents = useDemoIncidents(demoOn);
+  const [showAllDemo, setShowAllDemo] = useState(false);
+  // Demo mode: a demo clip's incident is "recorded" once the Monitor wall has flagged it this session (alerting
+  // verdicts only), dated when it appeared. "Show all demo results" lists every analysed demo clip instead.
+  const listed = useMemo(() => {
+    if (!allIncidents) return null;
+    if (!demoOn) return { items: forDemoMode(allIncidents, false), seenAt: new Map<string, number>() };
+    const everything = withDemoIncidents(allIncidents, demoIncidents);
+    if (showAllDemo) return { items: everything, seenAt: new Map<string, number>() };
+    return withSightings(everything, sightings);
+  }, [allIncidents, demoOn, showAllDemo, sightings, demoIncidents]);
+  const incidents = listed?.items ?? null;
+  const when = (incident: Incident) => {
+    const seen = listed?.seenAt.get(incident.id);
+    return seen ? new Date(seen).toISOString() : incident.created_at;
+  };
+  const unseenDemo =
+    demoOn && !showAllDemo && demoIncidents.length > 0 && !listed?.seenAt.size;
   const [range, setRange] = useState<Range>("24h");
   const [cameraId, setCameraId] = useState("all");
   const [eventType, setEventType] = useState<EventFilter>("all");
@@ -196,6 +221,14 @@ export default function PlaybackPage() {
         <section aria-labelledby="results-title">
           <h2 id="results-title">Results</h2>
           {!incidents && !error && <Skeletons count={3} />}
+          {unseenDemo && (
+            <p className="hint">
+              Demo recordings appear here once their clip flags on the <Link href="/monitor">Monitor</Link>.{" "}
+              <button type="button" className="linkish" onClick={() => setShowAllDemo(true)}>
+                Show all demo results
+              </button>
+            </p>
+          )}
           {incidents && results.length === 0 && <p className="muted">No results match this search.</p>}
           <div className="playback-grid">
             {results.map((incident) => (
@@ -208,7 +241,8 @@ export default function PlaybackPage() {
               >
                 <span className="wall-tag">{VERDICT_LABEL[incident.verdict.verdict]}</span>
                 <span className="playback-meta">
-                  {clock(incident.created_at)} · {incident.camera_name}
+                  {clock(when(incident))} · {incident.camera_name}
+                  {listed?.seenAt.has(incident.id) ? " · demo, just now" : ""}
                 </span>
               </button>
             ))}
@@ -222,7 +256,7 @@ export default function PlaybackPage() {
             <>
               <p className="playback-heading">
                 <strong>{selected.camera_name}</strong>
-                <span className="muted"> · {clock(selected.created_at)}</span>
+                <span className="muted"> · {clock(when(selected))}</span>
               </p>
               <div
                 className={`playback-stage camera-${selected.camera_kind}`}
