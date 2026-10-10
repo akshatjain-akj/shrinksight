@@ -5,21 +5,48 @@ export function forDemoMode<T extends { source: string }>(items: T[], on: boolea
   return on ? items : items.filter((item) => item.source !== "demo");
 }
 
+/** A demo clip that reached its analysed moment on the Monitor this browser session. */
+export interface DemoSighting {
+  clip: string;
+  incidentId: string;
+  verdict: string;
+  /** When it appeared on the wall (ms since epoch). */
+  at: number;
+}
+
+/** Verdicts that raise an alert. A benign clip shows its badge on the tile but is never "recorded". */
+export const ALERTING = new Set(["SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH", "INCONCLUSIVE"]);
+
+/** True when a tile playing this clip should alert now: not yet seen this session, and past its analysed moment. */
+export function shouldAlert(sightings: DemoSighting[], clip: string, alertAt: number, seconds: number): boolean {
+  return seconds + 0.05 >= alertAt && !sightings.some((s) => s.clip === clip);
+}
+
+/** Newest first, one per clip: looping, or two tiles sharing a clip, never adds a second entry. */
+export function addSighting(sightings: DemoSighting[], next: DemoSighting): DemoSighting[] {
+  if (sightings.some((s) => s.clip === next.clip)) return sightings;
+  return [next, ...sightings];
+}
+
 /**
- * Each demo clip alerts once per page session: the first time its tile plays past the analysed moment. Later loops,
- * and other tiles playing the same clip, stay quiet.
+ * The incident list in demo mode: real incidents as they are, plus only the demo incidents the wall has flagged this
+ * session (alerting verdicts), newest sighting first and dated when they appeared. `seenAt` maps incident id → time.
  */
-export class AlertOnce {
-  private readonly seen = new Set<string>();
+export function withSightings<T extends { id: string; source: string }>(
+  incidents: T[],
+  sightings: DemoSighting[],
+): { items: T[]; seenAt: Map<string, number> } {
+  const seen = sightings.filter((s) => ALERTING.has(s.verdict));
+  const seenAt = new Map(seen.map((s) => [s.incidentId, s.at]));
+  const order = new Map(seen.map((s, index) => [s.incidentId, index]));
+  const items = incidents
+    .filter((incident) => incident.source !== "demo" || seenAt.has(incident.id))
+    .sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity));
+  return { items, seenAt };
+}
 
-  /** True exactly once per clip, when playback reaches `alertAt` seconds. */
-  check(clip: string, alertAt: number, seconds: number): boolean {
-    if (this.seen.has(clip) || seconds + 0.05 < alertAt) return false;
-    this.seen.add(clip);
-    return true;
-  }
-
-  has(clip: string): boolean {
-    return this.seen.has(clip);
-  }
+/** The newest-incidents list plus the demo clips' results (often older than that window), each incident once. */
+export function withDemoIncidents<T extends { id: string }>(live: T[], demo: T[]): T[] {
+  const ids = new Set(live.map((incident) => incident.id));
+  return [...live, ...demo.filter((incident) => !ids.has(incident.id))];
 }

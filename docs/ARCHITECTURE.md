@@ -116,6 +116,13 @@ erDiagram
   their clip, Tier-1 runs on the selected tile only, and each clip's verdict shows once per session when playback
   reaches its analysed moment (`alert_at`), moving its incident to the top. No Gemini calls, no new incidents. Off: no
   video, and demo incidents are hidden from Monitor and Playback.
+- **Monitor → Playback flow:** what the wall flags is kept per sign-in (`localStorage` under a session key, shared by
+  every tab; `web/lib/demoAlerts.ts`): one entry per clip, so a clip alerts once per sign-in even across page changes
+  and tabs. Demo results are fetched on their own (`GET /api/demo/incidents`) because they are usually older than the
+  newest-50 incident window. Demo incidents appear in the alert
+  list and in Playback only after their clip has flagged on the wall, dated when they appeared, and only for alerting
+  verdicts (a benign clip shows its badge on the tile). Playback offers "Show all demo results" before anything has
+  flagged. A new sign-in or incognito window starts fresh.
 - **Playback / incident page:** a demo incident plays its `clip_ref` with the time-synced Gemini boxes.
 - **Switch:** `DEMO_CLIP_UPLOADS=off` disables saving and deleting demo clips (for the submission); the demo account
   can never do either.

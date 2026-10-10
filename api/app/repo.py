@@ -38,6 +38,7 @@ class Repo(Protocol):
     def get_transaction(self, txn_id: str) -> Transaction | None: ...
     def save_transaction(self, txn: Transaction) -> None: ...
     def incidents(self, limit: int = 50) -> list[Incident]: ...
+    def demo_incidents(self) -> list[Incident]: ...
     def get_incident(self, incident_id: str) -> Incident | None: ...
     def save_incident(self, incident: Incident) -> None: ...
     def delete_incident(self, incident_id: str) -> None: ...
@@ -204,6 +205,9 @@ class MemoryRepo:
         self.purge_expired()
         items = sorted(self._all("incidents"), key=lambda d: d["created_at"], reverse=True)
         return [Incident(**d) for d in items[:limit]]
+
+    def demo_incidents(self) -> list[Incident]:
+        return [Incident(**d) for d in self._all("incidents") if d.get("source") == "demo"]
 
     def get_incident(self, incident_id: str) -> Incident | None:
         doc = self._get("incidents", incident_id)
@@ -430,6 +434,11 @@ class FirestoreRepo:
             .order_by("created_at", direction=self._fs.Query.DESCENDING)
             .limit(limit)
         )
+        return [Incident(**d.to_dict()) for d in query.stream()]
+
+    def demo_incidents(self) -> list[Incident]:
+        # One per demo clip, so few; an equality filter needs no composite index.
+        query = self._db.collection("incidents").where(filter=self._fs.FieldFilter("source", "==", "demo"))
         return [Incident(**d.to_dict()) for d in query.stream()]
 
     def get_incident(self, incident_id: str) -> Incident | None:
