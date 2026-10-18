@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ShrinkSight · Google Cloud AI Builder Cup 2026</title>
+<style>
+  @page { size: 13.333in 7.5in; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #0b1220; font-family: "Segoe UI", Inter, Roboto, Arial, sans-serif; color: #e6ebf5; }
+  .slide {
+    width: 13.333in; height: 7.5in; padding: 0.6in 0.75in; position: relative; overflow: hidden;
+    page-break-after: always; break-after: page;
+    background: radial-gradient(120% 90% at 85% 0%, #1a2844 0%, #0b1220 60%);
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .slide:last-child { page-break-after: auto; break-after: auto; }
+  @media screen { .slide { margin: 0 auto 24px; box-shadow: 0 8px 30px rgb(0 0 0 / 0.5); } body { padding: 24px 0; } }
+  h1 { font-size: 54px; margin: 0 0 10px; letter-spacing: -0.5px; }
+  h2 { font-size: 36px; margin: 0 0 22px; color: #fff; }
+  h3 { font-size: 21px; margin: 0 0 8px; color: #7dd3fc; }
+  p, li { font-size: 19px; line-height: 1.45; color: #cbd5e1; }
+  ul { margin: 0; padding-left: 1.1em; }
+  li { margin-bottom: 8px; }
+  .kicker { color: #38bdf8; font-weight: 700; letter-spacing: 2px; font-size: 14px; text-transform: uppercase; margin-bottom: 14px; }
+  .lead { font-size: 25px; color: #e2e8f0; max-width: 10.5in; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .card { background: rgb(255 255 255 / 0.05); border: 1px solid rgb(148 163 184 / 0.25); border-radius: 14px; padding: 20px 22px; }
+  .card p, .card li { font-size: 17px; }
+  .stat { font-size: 54px; font-weight: 800; color: #f87171; line-height: 1; }
+  .stat.ok { color: #34d399; } .stat.info { color: #38bdf8; }
+  .foot { position: absolute; left: 0.75in; right: 0.75in; bottom: 0.32in; display: flex; justify-content: space-between; font-size: 12px; color: #64748b; }
+  .chip { display: inline-block; padding: 4px 12px; border-radius: 999px; background: rgb(56 189 248 / 0.15); color: #7dd3fc; font-size: 15px; margin: 0 6px 6px 0; border: 1px solid rgb(56 189 248 / 0.35); }
+  .flow { display: flex; align-items: stretch; gap: 10px; margin-top: 10px; }
+  .flow .card { flex: 1; }
+  .arrow { align-self: center; font-size: 30px; color: #38bdf8; }
+  .tag { font-size: 13px; color: #94a3b8; }
+  .arch { display: grid; grid-template-columns: 1.1fr 0.2fr 1.3fr 0.2fr 1.1fr; align-items: center; gap: 6px; margin-top: 8px; }
+  .box { border-radius: 12px; padding: 14px 16px; border: 1px solid; font-size: 16px; line-height: 1.4; }
+  .box b { display: block; font-size: 18px; margin-bottom: 4px; }
+  .b-edge { background: rgb(52 211 153 / 0.1); border-color: #34d399; }
+  .b-run { background: rgb(56 189 248 / 0.1); border-color: #38bdf8; }
+  .b-ai { background: rgb(168 85 247 / 0.12); border-color: #a855f7; }
+  .b-data { background: rgb(251 191 36 / 0.1); border-color: #fbbf24; }
+  .stack { display: grid; gap: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 17px; }
+  td, th { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgb(148 163 184 / 0.2); color: #cbd5e1; vertical-align: top; }
+  th { color: #7dd3fc; font-size: 15px; text-transform: uppercase; letter-spacing: 1px; }
+  .big-title { margin-top: 1.1in; }
+  .accent { color: #38bdf8; }
+  .src { font-size: 11px; color: #64748b; margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<!-- 1. Title -->
+<section class="slide">
+  <div class="big-title">
+    <div class="kicker">Google Cloud AI Builder Cup 2026 · Theme: Retail &amp; Commerce — Intelligent Customer and Business Experiences</div>
+    <h1>ShrinkSight</h1>
+    <p class="lead"><em>Sees what the till missed.</em><br />Two-tier loss prevention: on-device vision flags the moment, a Gemini agent investigates it against the till receipt, and a human decides with evidence.</p>
+    <p style="margin-top:28px">
+      <span class="chip">Gemini video understanding</span><span class="chip">Function calling</span><span class="chip">Structured output</span>
+      <span class="chip">MediaPipe on-device</span><span class="chip">Cloud Run · Firebase · Firestore</span>
+    </p>
+    <p style="margin-top:26px; font-size:20px">Live: <span class="accent">https://shrinksight-app.web.app</span> → click <b>Enter the demo store</b> (no sign-up)</p>
+  </div>
+  <div class="foot"><span>Team: Akshat Jain · avni17</span><span>Synthetic store data only</span></div>
+</section>
+
+<!-- 2. Problem -->
+<section class="slide">
+  <div class="kicker">The problem</div>
+  <h2>Self-checkout made stores faster — and leakier</h2>
+  <div class="grid3">
+    <div class="card"><div class="stat">+22%</div><p>store losses in the first year after self-checkout is introduced; it now carries over half of grocery transactions.</p></div>
+    <div class="card"><div class="stat info">52%</div><p>of shrink is <b>accidental</b> (missed scans, rescans), not theft — so blunt alerts accuse honest shoppers.</p></div>
+    <div class="card"><div class="stat">Hours</div><p>of CCTV nobody watches. Staff drown in false alarms and can't tell a pocketed item from a phone.</p></div>
+  </div>
+  <div class="grid2" style="margin-top:24px">
+    <div class="card"><h3>Who feels it</h3><p>Store managers and loss-prevention staff in small and mid-size retail — no analyst team, existing cameras, thin margins.</p></div>
+    <div class="card"><h3>What's wrong today</h3><p>Single-model alerts with no evidence trail, wrongful stops (e.g. the FTC's Rite Aid ban), and footage stored with faces.</p></div>
+  </div>
+  <p class="src">Sources: ECR Retail Loss 2026 self-checkout report (via Technology Magazine); ECR Loss Group; FTC v. Rite Aid (NBC News).</p>
+  <div class="foot"><span>ShrinkSight</span><span>2</span></div>
+</section>
+
+<!-- 3. Solution -->
+<section class="slide">
+  <div class="kicker">The solution</div>
+  <h2>Watch cheaply on the device. Ask Gemini only when it matters.</h2>
+  <div class="flow">
+    <div class="card"><h3>Tier 1 · in the browser</h3><p>MediaPipe pose + zones on existing cameras. Faces blurred <b>on the device</b>. A self-calibrating gate opens only on suspicious moments.</p><p class="tag">Free · private · real time</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><h3>Tier 2 · Gemini agent</h3><p>Watches the clip, calls tools for the <b>till receipt</b>, zone policy and prices, and returns a structured, timestamped incident.</p><p class="tag">Video understanding · function calling · structured output</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><h3>Safety rules + human</h3><p>Deterministic receipt and shop-floor rules check Gemini's answer. Staff confirm or dismiss with a reason — and the camera learns.</p><p class="tag">No silent accusations</p></div>
+  </div>
+  <div class="grid3" style="margin-top:22px">
+    <div class="card"><h3>Self-checkout</h3><p>Every item seen vs. every receipt line → the exact unscanned item and ₹ loss.</p></div>
+    <div class="card"><h3>Shop floor</h3><p>Where each item came from and where it ended: in hand, concealed, put back.</p></div>
+    <div class="card"><h3>Evidence</h3><p>Gemini's boxes follow the video; every claim has a timestamp you can click.</p></div>
+  </div>
+  <div class="foot"><span>ShrinkSight</span><span>3</span></div>
+</section>
+
+<!-- 4. Product walkthrough -->
+<section class="slide">
+  <div class="kicker">What judges can try (one click: Enter the demo store)</div>
+  <h2>The product</h2>
+  <div class="grid2">
+    <div class="stack">
+      <div class="card"><h3>Monitor · demo mode</h3><p>Camera wall loops demo clips; Tier-1 skeleton on the selected tile; each clip raises its stored Gemini verdict once — no repeat Gemini calls.</p></div>
+      <div class="card"><h3>Incident</h3><p>Seen on camera vs. till receipt, unscanned items, estimated ₹ loss, the agent's tool steps, token use, Confirm / Dismiss with reason.</p></div>
+      <div class="card"><h3>Playback</h3><p>Stored Gemini result with clickable timeline and time-synced boxes; Tier-1 replays as an overlay only.</p></div>
+    </div>
+    <div class="stack">
+      <div class="card"><h3>Investigate a clip</h3><p>Upload or record → mark zones (or let Gemini suggest them) → optional on-device Tier-1 screening → Gemini verdict with live progress.</p></div>
+      <div class="card"><h3>Live edge</h3><p>Webcam or file through Tier 1 in real time, face-blurred, auto-sending only gated, always-playable clips.</p></div>
+      <div class="card"><h3>Ask &amp; Rules</h3><p>Ask the agent about an incident in plain English; write store rules in plain English → validated structured rules.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span>ShrinkSight</span><span>4</span></div>
+</section>
+
+<!-- 5. Gemini depth -->
+<section class="slide">
+  <div class="kicker">Technical merit · Gen AI is load-bearing</div>
+  <h2>How Gemini is used (and kept honest)</h2>
+  <div class="grid2">
+    <div class="card"><h3>One pass, many signals</h3><ul>
+      <li>Video + time-ordered stills + high-detail close-ups (item pile, hands, scanner) in a single call</li>
+      <li>Tool calls first: receipt, zone policy, SKU prices</li>
+      <li>Structured output: verdict, items with timestamps, boxes, custody (came from → ended in)</li>
+      <li>Separate image-only call lists the item pile; staff confirm the chips</li></ul></div>
+    <div class="card"><h3>Guard-rails around the model</h3><ul>
+      <li>Deterministic receipt rule and shop-floor rule can override or downgrade</li>
+      <li>One re-check when an answer contradicts itself; otherwise "needs review", never a guess</li>
+      <li>50-second budget, model fallback on quota, results cached per clip</li>
+      <li>Camera memory: staff reviews become few-shot context; the Tier-1 gate auto-tunes from false-alarm rate</li></ul></div>
+  </div>
+  <div class="foot"><span>ShrinkSight</span><span>5</span></div>
+</section>
+
+<!-- 6. Responsible AI -->
+<section class="slide">
+  <div class="kicker">Privacy &amp; fairness by design</div>
+  <h2>Built so the wrong person isn't accused</h2>
+  <div class="grid3">
+    <div class="card"><h3>No faces leave the device</h3><p>Live clips are face-blurred in the browser before upload. No facial recognition, no biometric templates.</p></div>
+    <div class="card"><h3>Clips aren't stored</h3><p>Only the report is kept. Your own replay copy stays in your browser for 24 h and is deleted on sign-out.</p></div>
+    <div class="card"><h3>Evidence, not vibes</h3><p>Every claim is timestamped and boxed; rules check the model; a human makes the final call with a reason.</p></div>
+  </div>
+  <div class="grid2" style="margin-top:22px">
+    <div class="card"><h3>Retention</h3><p>False alarms deleted after 1 day, real events after 7 days. Synthetic or consented footage only.</p></div>
+    <div class="card"><h3>Actions only</h3><p>Prompts describe actions — never appearance, age, gender or ethnicity.</p></div>
+  </div>
+  <div class="foot"><span>ShrinkSight</span><span>6</span></div>
+</section>
+
+<!-- 7. Architecture -->
+<section class="slide">
+  <div class="kicker">Architecture</div>
+  <h2>Google Cloud end to end</h2>
+  <div class="arch">
+    <div class="stack">
+      <div class="box b-edge"><b>Browser (Next.js, Firebase Hosting)</b>MediaPipe pose / face / objects · on-device face blur · Tier-1 gate · clip buffer</div>
+      <div class="box b-edge"><b>Staff UI</b>Monitor · Incident · Playback · Investigate · Rules · Settings</div>
+    </div>
+    <div class="arrow" style="text-align:center">⇄</div>
+    <div class="stack">
+      <div class="box b-run"><b>Cloud Run · FastAPI</b>Investigation agent · safety rules · camera memory · edge auto-tuning · demo clips · rate limits</div>
+      <div class="box b-ai"><b>Gemini API (google-genai)</b>Video understanding · function calling · structured output · fallback models</div>
+    </div>
+    <div class="arrow" style="text-align:center">⇄</div>
+    <div class="stack">
+      <div class="box b-data"><b>Firestore</b>Incidents · receipts · feedback · edge config (live onSnapshot)</div>
+      <div class="box b-data"><b>Cloud Storage</b>Demo clips (signed URLs)</div>
+      <div class="box b-data"><b>Secret Manager</b>Gemini key · auth secret</div>
+    </div>
+  </div>
+  <p style="margin-top:22px">CI/CD: GitHub Actions → Workload Identity Federation → Cloud Run + Firebase Hosting. Stateless API, scale to zero, $0 free-tier footprint.</p>
+  <div class="foot"><span>ShrinkSight</span><span>7</span></div>
+</section>
+
+<!-- 8. Impact -->
+<section class="slide">
+  <div class="kicker">Impact</div>
+  <h2>Value for stores, staff and shoppers</h2>
+  <table>
+    <tr><th>Before</th><th>With ShrinkSight</th></tr>
+    <tr><td>Staff scrub hours of CCTV or chase every beep</td><td>Only gated moments reach Gemini; staff get a verdict, the item, the timestamp and ₹ loss</td></tr>
+    <tr><td>Alerts with no reason; honest shoppers stopped</td><td>Receipt-checked evidence; "needs review" instead of a guess; reviews teach each camera</td></tr>
+    <tr><td>Expensive new hardware</td><td>Runs on existing cameras and a browser; scales to zero</td></tr>
+    <tr><td>Footage of faces stored centrally</td><td>Faces blurred on the device; clips not stored; short retention</td></tr>
+  </table>
+  <p style="margin-top:18px">Community benefit: fewer wrongful accusations, lower shrink for thin-margin local retailers, and a privacy-first template for retail AI.</p>
+  <div class="foot"><span>ShrinkSight</span><span>8</span></div>
+</section>
+
+<!-- 9. Feasibility & scalability -->
+<section class="slide">
+  <div class="kicker">Feasibility &amp; scalability</div>
+  <h2>Working today, ready to grow</h2>
+  <div class="grid2">
+    <div class="card"><h3>Feasible now</h3><ul>
+      <li>Deployed and public; demo login for judges</li>
+      <li>200+ backend and 80 frontend automated tests; CI on every push</li>
+      <li>Evaluation harness with repeat runs for stability</li>
+      <li>Runs on Gemini free tier with caching and fallbacks</li></ul></div>
+    <div class="card"><h3>At 100× stores</h3><ul>
+      <li>Tier 1 stays on each device — Gemini volume grows with <em>suspicious moments</em>, not camera hours</li>
+      <li>Stateless Cloud Run scales horizontally; Firestore per-store partitioning</li>
+      <li>Move to Vertex AI quotas, Pub/Sub queue for bursts, per-store auto-tuned gates</li>
+      <li>POS integration replaces typed receipts</li></ul></div>
+  </div>
+  <div class="foot"><span>ShrinkSight</span><span>9</span></div>
+</section>
+
+<!-- 10. Roadmap + close -->
+<section class="slide">
+  <div class="kicker">What's next</div>
+  <h2>Roadmap</h2>
+  <div class="grid3">
+    <div class="card"><h3>Shopper's Advocate</h3><p>A second Gemini agent argues the innocent explanation with fresh close-ups; a fixed rule decides. No retail product does this today.</p></div>
+    <div class="card"><h3>Fix my bill</h3><p>Show the exact missed items and price on the kiosk; one tap to add — no confrontation.</p></div>
+    <div class="card"><h3>Live POS + multi-store</h3><p>Real till feeds, store-level dashboards, shrink trends and layout advice.</p></div>
+  </div>
+  <div class="card" style="margin-top:26px">
+    <p style="font-size:22px; margin:0">Try it: <span class="accent">https://shrinksight-app.web.app</span> → <b>Enter the demo store</b><br />
+    Code: <span class="accent">github.com/akshatjain-akj/shrinksight</span> · Theme: Retail &amp; Commerce</p>
+  </div>
+  <div class="foot"><span>Team: Akshat Jain · avni17</span><span>10</span></div>
+</section>
+
+</body>
+</html>
