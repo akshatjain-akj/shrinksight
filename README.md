@@ -15,7 +15,7 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 | Page | What it does |
 |---|---|
 | **Overview** (`/`) | What ShrinkSight does, how the two tiers work, architecture |
-| **Monitor** (`/monitor`) | Camera wall with live alert rail (Firestore real-time), false-alarm funnel. **Demo mode** (on for the demo login): every camera loops a demo clip and shows its stored Gemini result once, with no new Gemini calls |
+| **Monitor** (`/monitor`) | Camera wall with live alert rail (Firestore real-time), false-alarm funnel. **Demo mode** (off until the Monitor toggle is switched on): every camera loops a demo clip and shows its stored Gemini result once, with no new Gemini calls |
 | **Playback** (`/playback`) | Search incidents by date, camera and event; replay the incident timeline |
 | **Live edge** (`/edge`) | Tier 1 on this device: MediaPipe pose/face/objects, on-device face blur, score gate → Gemini |
 | **Incident** (`/incident?id=…`) | Gemini's verdict, agent steps, *seen on camera vs. till receipt*, estimated loss in ₹, human Confirm / Dismiss |
