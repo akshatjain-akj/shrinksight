@@ -14,7 +14,7 @@ The shop floor has no receipt, so it gets its own safety rule: a store item (pic
 ended concealed in a pocket, clothing or a personal bag is never accepted as BENIGN.
 """
 
-from .models import LEFT_BEHIND, POSITIVE_VERDICTS, TAKEN, InventoryItem, ReceiptLine, VerdictOut
+from .models import LEFT_BEHIND, POSITIVE_VERDICTS, TAKEN, InventoryItem, ReceiptLine, Rule, VerdictOut
 
 
 def reconcile(
@@ -218,3 +218,44 @@ def apply_floor_rule(verdict: VerdictOut) -> tuple[VerdictOut, str | None, bool]
                 "was a store item, so a person should look.")
         return verdict.model_copy(update={"verdict": "INCONCLUSIVE", "reason": f"{note} {verdict.reason}"}), note, True
     return verdict, None, False
+
+
+THREAT_LABEL = {"firearm": "firearm", "knife": "knife", "other_weapon": "weapon"}
+
+
+def _watched_kinds(rules: list[Rule]) -> set[str]:
+    kinds: set[str] = set()
+    for rule in rules:
+        wanted = rule.spec.threat_of or "any_weapon"
+        kinds |= {"firearm", "knife", "other_weapon"} if wanted == "any_weapon" else {wanted}
+    return kinds
+
+
+def apply_threat_rule(
+    verdict: VerdictOut, rules: list[Rule], tier1_events: list[dict] | None = None
+) -> tuple[VerdictOut, str | None, bool, bool]:
+    """Deterministic rule for the store's THREAT rules. Returns (verdict, note, overridden, urgent).
+
+    - Gemini saw a watched weapon -> RULE_BREACH, urgent: a person verifies on camera at once.
+    - Tier 1 saw an aiming pose but Gemini saw no weapon, and Gemini said BENIGN -> INCONCLUSIVE (needs review):
+      a missed weapon must never read as "all clear".
+    Without a threat rule nothing changes.
+    """
+    if not rules:
+        return verdict, None, False, False
+    watched = _watched_kinds(rules)
+    seen = [t for t in verdict.threats if t.type in watched]
+    if seen:
+        first = seen[0]
+        what = THREAT_LABEL[first.type] + (" pointed at a person" if first.pointed_at_person else " visible in a hand")
+        note = f"Possible threat: {what} at {first.t}. Verify on camera; ShrinkSight never contacts police."
+        changed = verdict.verdict != "RULE_BREACH"
+        updated = verdict.model_copy(update={"verdict": "RULE_BREACH", "reason": f"{note} {verdict.reason}"})
+        return updated, note, changed, True
+    aimed = next((e for e in tier1_events or [] if e.get("kind") == "THREAT"), None)
+    if aimed and verdict.verdict == "BENIGN":
+        note = (f"Threat check: the on-device check saw a possible aiming pose at {aimed.get('t', '?')}, but no weapon "
+                "was visible to Gemini. A person should look at the camera.")
+        updated = verdict.model_copy(update={"verdict": "INCONCLUSIVE", "reason": f"{note} {verdict.reason}"})
+        return updated, note, True, False
+    return verdict, None, False, False

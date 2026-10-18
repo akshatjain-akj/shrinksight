@@ -70,6 +70,8 @@ function posePeople(poses: Landmark[][], tMs: number) {
         rightHip,
         leftShoulder: visible(11),
         rightShoulder: visible(12),
+        leftElbow: visible(13),
+        rightElbow: visible(14),
         box,
       },
     }];
@@ -258,6 +260,7 @@ export default function LiveScan({
         return;
       }
       tracker.setWatchHealth(loadCameraConfigs()[active.id]?.detection.healthHazard !== false);
+      // The light tile models have no object detector: threat rules use the aiming pose here (elbows below).
       const watched = tracker.update(posePeople(lastPoses, now - started), now - started);
       ctx.clearRect(0, 0, width, height);
       // Faces from the face detector plus heads from the pose model (works at CCTV distance).

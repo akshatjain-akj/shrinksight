@@ -3,7 +3,18 @@
 export type CameraKind = "checkout" | "floor";
 export type VerdictKind = "SCAN_AVOIDANCE" | "CONCEALMENT" | "RULE_BREACH" | "BENIGN" | "INCONCLUSIVE";
 export type IncidentStatus = "NEEDS_REVIEW" | "REJECTED" | "RESOLVED_CONFIRMED" | "RESOLVED_DISMISSED";
-export type RuleType = "DWELL" | "ZONE_ENTRY" | "CONCEALMENT_SENSITIVITY" | "SCANNER_BYPASS";
+export type RuleType = "DWELL" | "ZONE_ENTRY" | "CONCEALMENT_SENSITIVITY" | "SCANNER_BYPASS" | "THREAT";
+/** THREAT rules: what to watch for. Tier 1 sends on an aiming pose (or a knife by a hand); Gemini confirms. */
+export type ThreatOf = "firearm" | "knife" | "any_weapon";
+
+/** A weapon Gemini could see, reported only when a store threat rule is active. */
+export interface ThreatSeen {
+  type: "firearm" | "knife" | "other_weapon";
+  t: string;
+  box_2d: number[];
+  pointed_at_person: boolean;
+  description: string;
+}
 export type ConcealmentOf = "pocket" | "bag" | "shirt" | "waistband";
 export type Severity = "LOW" | "MEDIUM" | "HIGH";
 
@@ -149,6 +160,8 @@ export interface Verdict {
   reason: string;
   /** A past manager decision on this camera that Gemini found similar, e.g. "4 Oct: personal phone". */
   similar_past_case?: string | null;
+  /** Weapons Gemini could see (only when a store threat rule is active). */
+  threats?: ThreatSeen[];
 }
 
 export interface UnscannedItem {
@@ -229,6 +242,8 @@ export interface Incident {
   model: string;
   /** "demo": the analysed result of a demo clip, replayed on every Monitor loop. */
   source: "seed" | "live" | "demo";
+  /** A store threat rule fired: Gemini saw a watched weapon. Urgent; a person verifies on camera. */
+  urgent?: boolean;
   /** The demo clip this incident was analysed from. */
   clip_ref?: string | null;
   latency_ms: number | null;
@@ -280,6 +295,7 @@ export interface RuleSpec {
   active_to: string | null;
   sensitivity: "low" | "medium" | "high" | null;
   concealment_of?: ConcealmentOf | null;
+  threat_of?: ThreatOf | null;
   severity: Severity;
   summary: string;
 }

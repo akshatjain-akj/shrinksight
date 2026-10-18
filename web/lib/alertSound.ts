@@ -43,3 +43,26 @@ export function playAlertChime(): void {
   tone(784, now);
   tone(1046, now + 0.14);
 }
+
+/** Urgent alarm for a possible threat: three sharp, rising beeps, clearly different from the review chime. */
+export function playThreatAlarm(): void {
+  const ctx = context();
+  if (!ctx) return;
+  if (ctx.state === "suspended") void ctx.resume();
+  const start = ctx.currentTime;
+  for (let i = 0; i < 3; i += 1) {
+    const at = start + i * 0.32;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.18, at + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.24);
+    gain.connect(ctx.destination);
+    const osc = ctx.createOscillator();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(880, at);
+    osc.frequency.linearRampToValueAtTime(1320, at + 0.2);
+    osc.connect(gain);
+    osc.start(at);
+    osc.stop(at + 0.25);
+  }
+}

@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { aiModelLabel, clipSeconds, dateTime, inr } from "@/lib/format";
 import { useConfiguredModel, useRules, useStore } from "@/lib/hooks";
-import { flaggedItem } from "@/lib/marks";
+import { flaggedItem, threatMarks } from "@/lib/marks";
 import { fitPlayer } from "@/lib/player";
 import GeminiMarks from "./GeminiMarks";
 import LiveScan from "./LiveScan";
@@ -110,8 +110,10 @@ function AgentSteps({ incident }: { incident: Incident }) {
   );
 }
 
-function Evidence({ incident, videoUrl, videoNote, focus, videoRef, camera, zones, rules }: {
+function Evidence({ incident, items, videoUrl, videoNote, focus, videoRef, camera, zones, rules }: {
   incident: Incident;
+  /** Gemini's marks: any weapons it saw, then the items. */
+  items: SeenItem[];
   videoUrl?: string;
   videoNote?: string;
   focus: SeenItem | null;
@@ -123,7 +125,7 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef, camera, zone
   const [aspect, setAspect] = useState<number | null>(null);
   // Where the video is (seconds); boxes are drawn only around their item's moment. Null without a video.
   const [playhead, setPlayhead] = useState<number | null>(videoUrl ? 0 : null);
-  const hasBoxes = incident.verdict.seen_items.some((item) => item.box_2d?.length === 4);
+  const hasBoxes = items.some((item) => item.box_2d?.length === 4);
   const zoneShapes = zonesForReplay(
     incident.zones_used,
     camera ? polygonsForCamera(camera.id, zones.filter((zone) => camera.zone_ids.includes(zone.id))) : [],
@@ -206,7 +208,7 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef, camera, zone
             })}
           </>
         )}
-        <GeminiMarks items={incident.verdict.seen_items} focus={focus} playhead={videoUrl ? playhead : null} />
+        <GeminiMarks items={items} focus={focus} playhead={videoUrl ? playhead : null} />
         {note && <p className="evidence-note">{note}</p>}
       </div>
       {videoUrl && hasBoxes && (
@@ -228,9 +230,9 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
   const { verdict } = incident;
   const configured = useConfiguredModel();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [focus, setFocus] = useState<SeenItem | null>(
-    () => flaggedItem(verdict.seen_items),
-  );
+  // A weapon Gemini saw comes first: it is the mark the evidence opens on.
+  const markItems = useMemo(() => [...threatMarks(verdict.threats), ...verdict.seen_items], [verdict]);
+  const [focus, setFocus] = useState<SeenItem | null>(() => flaggedItem(markItems));
   const [current, setCurrent] = useState(incident);
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -355,6 +357,7 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
           <h2>Evidence</h2>
           <Evidence
             incident={incident}
+            items={markItems}
             videoUrl={videoUrl}
             videoNote={videoNote}
             focus={focus}
@@ -366,6 +369,28 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
         </div>
 
         <div className="stack incident-rest">
+          {incident.urgent && (
+            <section className="card stack threat-card" role="alert" aria-labelledby="threat-title">
+              <h2 id="threat-title" style={{ margin: 0 }}>⚠ Possible threat</h2>
+              {(verdict.threats ?? []).map((threat, index) => (
+                <p key={index} style={{ margin: 0 }}>
+                  <strong>
+                    {threat.type === "firearm" ? "Firearm" : threat.type === "knife" ? "Knife" : "Weapon"}
+                    {threat.pointed_at_person ? " pointed at a person" : " in a hand"}
+                  </strong>{" "}
+                  ·{" "}
+                  <button type="button" className="linkish" onClick={() => seek(threat.t, markItems[index])}>
+                    {threat.t}
+                  </button>
+                  {threat.description ? ` · ${threat.description}` : ""}
+                </p>
+              ))}
+              <p className="small" style={{ margin: 0 }}>
+                Verify on camera now. A toy or replica can look the same. ShrinkSight never contacts police
+                automatically; a person decides.
+              </p>
+            </section>
+          )}
           <div className="card stack">
           <blockquote className="reason">{verdict.reason}</blockquote>
             {verdict.similar_past_case && (

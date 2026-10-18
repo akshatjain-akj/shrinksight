@@ -28,6 +28,13 @@ const TYPE_LABEL: Record<string, string> = {
   ZONE_ENTRY: "Zone entry",
   CONCEALMENT_SENSITIVITY: "Concealment sensitivity",
   SCANNER_BYPASS: "Scanner bypass",
+  THREAT: "Threat",
+};
+
+const THREAT_LABEL: Record<string, string> = {
+  firearm: "Firearm",
+  knife: "Knife",
+  any_weapon: "Any weapon",
 };
 
 function SpecChips({ spec, zones }: { spec: RuleSpec; zones: Zone[] }) {
@@ -36,6 +43,8 @@ function SpecChips({ spec, zones }: { spec: RuleSpec; zones: Zone[] }) {
     <div className="row">
       {spec.type && <span className="chip tone-accent">{TYPE_LABEL[spec.type]}</span>}
       {zone && <span className="chip">{zone.name}</span>}
+      {spec.type === "THREAT" && !zone && <span className="chip">All cameras</span>}
+      {spec.type === "THREAT" && <span className="chip tone-danger">{THREAT_LABEL[spec.threat_of ?? "any_weapon"]}</span>}
       {spec.min_seconds != null && <span className="chip">&gt; {spec.min_seconds} s</span>}
       {spec.active_from && spec.active_to && (
         <span className="chip">

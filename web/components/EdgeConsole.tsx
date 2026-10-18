@@ -14,6 +14,8 @@ import { PersonTracker } from "@/lib/tier1/tracks.ts";
 import { Tier1Engine } from "@/lib/tier1/engine.ts";
 import { privacyBoxes } from "@/lib/tier1/privacy.ts";
 import { PoseSmoother } from "@/lib/tier1/oneEuro.ts";
+import { toSeenObjects, withObjects } from "@/lib/tier1/objects.ts";
+import type { SeenObject } from "@/lib/tier1/threat.ts";
 import { handRect, pickFour, pickHands, toClipTime, type TimedStill } from "@/lib/tier1/stills.ts";
 import { canvasSegments, ClipBuffer, type Clip } from "@/lib/tier1/clipBuffer.ts";
 import { loadVision, type VisionModels } from "@/lib/tier1/vision.ts";
@@ -146,6 +148,8 @@ function posePeople(poses: Landmark[][], tMs: number) {
         rightHip,
         leftShoulder: visible(11),
         rightShoulder: visible(12),
+        leftElbow: visible(13),
+        rightElbow: visible(14),
         box,
       },
     }];
@@ -309,6 +313,8 @@ export default function EdgeConsole() {
     let rawPoses: { x: number; y: number; visibility?: number }[][] = [];
     const smoother = new PoseSmoother();
     let lastFaces: { originX: number; originY: number; width: number; height: number }[] = [];
+    // Knives and bats next to a hand feed the store's threat rules (a gun is caught by the aiming pose instead).
+    let lastObjects: SeenObject[] = [];
     stopRef.current = false;
     startedRef.current = performance.now();
     stillsRef.current = [];
@@ -352,7 +358,10 @@ export default function EdgeConsole() {
             .map((d) => d.boundingBox)
             .filter((b): b is NonNullable<typeof b> => Boolean(b));
         }
-        if (frame % 6 === 0) modelsRef.current.objects.detectForVideo(video, now);
+        if (frame % 6 === 0) {
+          const found = modelsRef.current.objects.detectForVideo(video, now).detections;
+          lastObjects = toSeenObjects(found, video.videoWidth, video.videoHeight);
+        }
       } catch {
         return;
       }
@@ -372,7 +381,10 @@ export default function EdgeConsole() {
         );
       }
 
-      const watched = trackerRef.current.update(posePeople(lastPoses, now - startedRef.current), now - startedRef.current);
+      const watched = trackerRef.current.update(
+        withObjects(posePeople(lastPoses, now - startedRef.current), lastObjects),
+        now - startedRef.current,
+      );
       const tick = watched.tick;
       phaseRef.current = { reachAtMs: tick.reachAtMs, holdAtMs: tick.holdAtMs };
       for (const mark of watched.boxes) strokePersonBox(btx, mark.box, fit, srcW, srcH);

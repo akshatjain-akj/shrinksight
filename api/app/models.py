@@ -9,7 +9,11 @@ CameraKind = Literal["checkout", "floor"]
 ZoneKind = Literal["pickup", "scanner", "bagging", "shelf", "exit"]
 VerdictKind = Literal["SCAN_AVOIDANCE", "CONCEALMENT", "RULE_BREACH", "BENIGN", "INCONCLUSIVE"]
 IncidentStatus = Literal["NEEDS_REVIEW", "REJECTED", "RESOLVED_CONFIRMED", "RESOLVED_DISMISSED"]
-RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BYPASS"]
+RuleType = Literal["DWELL", "ZONE_ENTRY", "CONCEALMENT_SENSITIVITY", "SCANNER_BYPASS", "THREAT"]
+# THREAT rules: which weapon to watch for. Tier 1 opens the gate on an aiming pose (or a knife next to a hand);
+# Gemini confirms what is actually visible.
+ThreatOf = Literal["firearm", "knife", "any_weapon"]
+ThreatKind = Literal["firearm", "knife", "other_weapon"]
 ConcealmentOf = Literal["pocket", "bag", "shirt", "waistband"]
 ItemLocation = Literal["over_scanner", "beside_scanner", "hidden_under_item", "never_near_scanner", "unclear"]
 # Where an item finished up. This, not the scanner path, decides whether an unscanned item is a loss.
@@ -196,6 +200,14 @@ class TimelineEvent(BaseModel):
     event: str
 
 
+class ThreatSeen(BaseModel):
+    type: ThreatKind = Field(description="firearm (gun, pistol, rifle, replica), knife, or other_weapon")
+    t: str = Field(description="Clip-relative mm:ss.s when it is most clearly visible")
+    box_2d: list[int] = Field(default_factory=list, description="[ymin, xmin, ymax, xmax] 0-1000 around the weapon")
+    pointed_at_person: bool = Field(default=False, description="True if it is aimed or held toward another person")
+    description: str = Field(default="", description="A few words on what is seen, actions only")
+
+
 class VerdictOut(BaseModel):
     verdict: VerdictKind
     confidence: float = Field(ge=0, le=1)
@@ -215,6 +227,19 @@ class VerdictOut(BaseModel):
         description="If one of this store's past review decisions in the briefing clearly resembles this clip, cite "
         "it in a few words (its date and what it was), else null",
     )
+    threats: list["ThreatSeen"] = Field(
+        default_factory=list,
+        description="Only when a store threat rule is given: each weapon you can clearly see in a person's hand. "
+        "Empty if none is visible; never guess.",
+    )
+
+    @field_validator("threats")
+    @classmethod
+    def _threat_boxes_well_formed(cls, threats: list["ThreatSeen"]) -> list["ThreatSeen"]:
+        for threat in threats:
+            if threat.box_2d and (len(threat.box_2d) != 4 or not all(0 <= v <= 1000 for v in threat.box_2d)):
+                threat.box_2d = []
+        return threats
 
     @field_validator("seen_items")
     @classmethod
@@ -303,6 +328,8 @@ class Incident(BaseModel):
     scanner_photo: Literal["clip", "saved"] | None = None
     review_reason: str | None = None
     review_note: str | None = None
+    # A store threat rule fired (Gemini saw a weapon): shown as an urgent alert; a person verifies on camera
+    urgent: bool = False
 
 
 # ---------- Manager feedback (the per-camera memory) ----------
@@ -420,6 +447,9 @@ class RuleSpec(BaseModel):
     active_from: str | None = Field(default=None, description="HH:MM 24h local time, or null for all day")
     active_to: str | None = Field(default=None, description="HH:MM 24h local time, or null for all day")
     sensitivity: Literal["low", "medium", "high"] | None = None
+    threat_of: ThreatOf | None = Field(
+        default=None, description="THREAT only: firearm, knife, or any_weapon (null means any_weapon)"
+    )
     concealment_of: ConcealmentOf | None = Field(
         default=None,
         description="Which concealment the rule watches: pocket, bag, shirt, or waistband. Null means all of them.",
@@ -457,7 +487,11 @@ def validate_rule_spec(spec: RuleSpec, zones: dict[str, Zone]) -> list[str]:
     problems: list[str] = []
     if spec.type is None:
         problems.append("Rule type is missing.")
-    if spec.zone_id not in zones:
+    if spec.type == "THREAT":
+        # A threat rule may cover every camera (no zone); a named zone must exist.
+        if spec.zone_id is not None and spec.zone_id not in zones:
+            problems.append("Pick one of the store's zones for this rule, or leave it for all cameras.")
+    elif spec.zone_id not in zones:
         problems.append("Pick one of the store's zones for this rule.")
     if spec.type == "DWELL" and not (spec.min_seconds and 5 <= spec.min_seconds <= 3600):
         problems.append("A loitering rule needs a time between 5 seconds and 1 hour.")

@@ -20,7 +20,7 @@ through tool calls, and returns a structured, evidence-backed incident, or rejec
 | **Live edge** (`/edge`) | Tier 1 on this device: MediaPipe pose/face/objects, on-device face blur, score gate → Gemini |
 | **Incident** (`/incident?id=…`) | Gemini's verdict, agent steps, *seen on camera vs. till receipt*, estimated loss in ₹, human Confirm / Dismiss |
 | **Investigate a clip** (`/investigate`) | Upload or record a clip → Gemini agent (video understanding + tool calls + structured output) → new incident, with live progress. Optional **Screen with Tier-1 first**: the on-device gate and hand measurements (shelf contacts, hand rests, checkout trips vs receipt) are shown first, then sent to Gemini as moments to look at |
-| **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable |
+| **Rules** (`/rules`) | Plain-English rule → Gemini structured rule → validated → saved and toggleable. **Threat rules** ("alert if anyone points a gun"): an on-device aiming pose sends the clip, Gemini confirms the weapon, and the Monitor raises an urgent alert for a person to verify |
 | **Setup check** (`/setup`) | Verifies Cloud Run, Firestore, Storage, Auth and Gemini |
 
 **How self-checkout accuracy works:** Gemini lists every item handled and matches each one to a till receipt

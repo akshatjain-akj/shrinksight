@@ -1,4 +1,5 @@
 import { dist, inAny, type Pt, type ZoneShape } from "./geometry.ts";
+import { ThreatWatch, type SeenObject } from "./threat.ts";
 import type { Rule } from "../types.ts";
 
 export interface BodySample {
@@ -11,16 +12,30 @@ export interface BodySample {
   rightHip?: Pt | null;
   leftShoulder?: Pt | null;
   rightShoulder?: Pt | null;
+  /** Elbows, for the aiming-pose check of a threat rule. */
+  leftElbow?: Pt | null;
+  rightElbow?: Pt | null;
+  /** Objects the on-device detector saw in this frame (knife, bat…), 0–1 boxes. */
+  objects?: SeenObject[];
   /** [ymin, xmin, ymax, xmax] in 0–1000, when a body is in frame. */
   box?: [number, number, number, number] | null;
 }
 
 export interface Tier1Hit {
   t: string;
-  kind: "SCANNER_BYPASS" | "CONCEALMENT" | "SHELF_REACH" | "PUT_BACK" | "HEALTH_HAZARD" | "DWELL" | "ZONE_ENTRY" | "LANE_CLEAR";
+  kind:
+    | "SCANNER_BYPASS"
+    | "CONCEALMENT"
+    | "SHELF_REACH"
+    | "PUT_BACK"
+    | "HEALTH_HAZARD"
+    | "DWELL"
+    | "ZONE_ENTRY"
+    | "LANE_CLEAR"
+    | "THREAT";
   score: number;
   detail: string;
-  trigger?: "hot_score" | "lane_leave";
+  trigger?: "hot_score" | "lane_leave" | "threat";
   confidence?: number;
   box?: [number, number, number, number];
   camera_id?: string;
@@ -221,6 +236,7 @@ export class Tier1Engine {
   /** Show the put-back line until this time. A returned item is not a hide. Starts in the past: clip time starts at 0. */
   private putBackUntil = Number.NEGATIVE_INFINITY;
   private readonly scale = new BodyScale();
+  private readonly threat = new ThreatWatch();
   /** When the torso first went flat on the floor. A bend toward a shelf does not start this. */
   private downSince: number | null = null;
   private dwellMs: Record<string, number> = {};
@@ -371,12 +387,35 @@ export class Tier1Engine {
       }
     }
 
+    // Store threat rules: an aiming pose (or a knife by a hand) sends at once; Gemini confirms the weapon.
+    const threatKinds = new Set(
+      this.rules
+        .filter((rule) => rule.spec.type === "THREAT" && ruleActive(rule, now))
+        .filter((rule) => {
+          if (!rule.spec.zone_id) return true;
+          const zone = this.zones.find((z) => z.id === rule.spec.zone_id);
+          return Boolean(zone && hips.some((hip) => inAny(hip, [zone])));
+        })
+        .map((rule) => rule.spec.threat_of ?? "any_weapon"),
+    );
+    const threatReason = this.threat.update(sample, threatKinds, sample.objects);
+    if (threatReason) {
+      raw = Math.max(raw, 0.9);
+      this.sawSignal = true;
+      hits.push({ t: stamp(sample.tMs), kind: "THREAT", score: 0.9, detail: threatReason });
+    }
+
     this.smoothed = this.smoothed * 0.55 + raw * 0.45;
     if (this.smoothed >= this.tuning.sendScore) this.hotFrames += 1;
     else this.hotFrames = 0;
 
     let shouldSend = this.hotFrames >= this.tuning.hotFrames && sample.tMs >= this.cooldownUntil;
     let reason = shouldSend ? "Score stayed high across consecutive frames" : "";
+    // A possible threat doesn't wait for hot frames or the usual cooldown (it has its own, per person).
+    if (threatReason) {
+      shouldSend = true;
+      reason = "Possible threat: aiming pose or weapon in a hand";
+    }
 
     const cleared =
       this.cameraKind === "checkout" &&
@@ -398,7 +437,11 @@ export class Tier1Engine {
     const dwellSeconds: Record<string, number> = {};
     for (const [id, ms] of Object.entries(this.dwellMs)) dwellSeconds[id] = Math.round(ms / 100) / 10;
 
-    const trigger: Tier1Hit["trigger"] = reason.startsWith("Shopper left") ? "lane_leave" : "hot_score";
+    const trigger: Tier1Hit["trigger"] = threatReason
+      ? "threat"
+      : reason.startsWith("Shopper left")
+        ? "lane_leave"
+        : "hot_score";
     const confidence = Math.round(this.smoothed * 100) / 100;
     const visible = (shouldSend || raw > 0 ? hits.slice(-4) : []).map((hit) => ({
       ...hit,

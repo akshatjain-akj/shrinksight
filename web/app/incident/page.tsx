@@ -8,7 +8,7 @@ import { ErrorNotice, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { openForReview } from "@/lib/demoAlerts";
 import { localClipNote, useLocalClip } from "@/lib/useLocalClip";
-import { useClipUrl, useDemoClipUrl } from "@/lib/useClip";
+import { useDemoClipUrl } from "@/lib/useClip";
 import type { Incident } from "@/lib/types";
 
 function IncidentLoader() {
@@ -21,8 +21,8 @@ function IncidentLoader() {
   const local = useLocalClip(id);
   // A demo clip's result always has its video: the clip it was analysed from.
   const demoUrl = useDemoClipUrl(incident?.clip_ref);
-  // Seed alerts have no clip of their own. Play the lane camera's clip, which is already on the monitor.
-  const laneUrl = useClipUrl(incident && !incident.clip_ref ? incident.camera_id : null);
+  // Only video that belongs to this report plays: its own demo clip, or this device's copy of the clip it came from.
+  // Never the camera's current demo feed: on a shared link that showed an unrelated clip next to the report.
 
   useEffect(() => {
     if (!id) return;
@@ -56,15 +56,13 @@ function IncidentLoader() {
   return (
     <IncidentDetail
       incident={incident}
-      videoUrl={demoUrl ?? laneUrl ?? local.url ?? undefined}
+      videoUrl={demoUrl ?? local.url ?? undefined}
       videoNote={
         demoUrl
           ? "Demo clip · analysed once by Gemini; this is its stored result"
-          : laneUrl
-            ? "This lane's camera clip"
-            : local.expiresAt
-              ? localClipNote(local.expiresAt)
-              : undefined
+          : local.expiresAt
+            ? localClipNote(local.expiresAt)
+            : undefined
       }
     />
   );

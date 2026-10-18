@@ -36,6 +36,7 @@ from .models import (
     Incident,
     InventoryItem,
     ReceiptLine,
+    Rule,
     Tier1Measure,
     TokenUsage,
     ToolCallLog,
@@ -48,6 +49,7 @@ from .models import (
 from .reconcile import (
     apply_floor_rule,
     apply_receipt_rule,
+    apply_threat_rule,
     confirmed_list_text,
     floor_problems,
     receipt_lines_text,
@@ -62,7 +64,7 @@ BACKUP_MIN_SECONDS = 20
 RECHECK_MIN_SECONDS = 15
 
 # Part of every cache key: changing the prompts below must produce fresh analyses, not old cached ones.
-PROMPT_VERSION = "2026-10-07.tier1-measurements"
+PROMPT_VERSION = "2026-10-19.threat-rules"
 # Shop-floor-only prompt and rule changes go here, in the cache key of floor cameras only, so a floor change never
 # re-runs checkout clips that are already cached.
 FLOOR_PROMPT_VERSION = "2026-10-07.own-bag"
@@ -173,6 +175,9 @@ line used at most once), or null if no line matches; scanned = true exactly when
 its path relative to the scanner zone; ended_in = where it finished (bag, in_hand, concealed, pile, put_back,
 unclear); came_from = where it was first picked up.
 items_seen and items_scanned must match seen_items.
+threats: leave empty unless a store threat rule is given below; then list each weapon you can clearly see in a
+person's hand (type, time, box, whether it is pointed at someone). A toy or replica looks the same: report it and
+staff decide. Never guess a weapon you can't see.
 reason: one or two plain sentences, actions only."""
 
 
@@ -248,6 +253,22 @@ def cache_key(
         h.update(label.encode())
         h.update(data)
     return "inv:" + h.hexdigest()
+
+
+def _threat_rules(repo: Repo, camera: Camera) -> list[Rule]:
+    """Enabled THREAT rules for this camera: store-wide ones (no zone) and ones on a zone this camera sees."""
+    return [r for r in repo.rules()
+            if r.enabled and r.spec.supported and r.spec.type == "THREAT"
+            and (r.spec.zone_id is None or r.spec.zone_id in camera.zone_ids)]
+
+
+def threat_text(rules: list[Rule]) -> str:
+    wanted = sorted({r.spec.threat_of or "any_weapon" for r in rules})
+    kinds = "any weapon" if "any_weapon" in wanted else " or ".join(w.replace("_", " ") for w in wanted)
+    lines = "\n".join(f"- {r.spec.summary}" for r in rules)
+    return ("Store threat rules (check these on every clip, even if it seems to be about something else):\n"
+            f"{lines}\nLook for {kinds} in a person's hand, and whether it is pointed at someone. Fill `threats` only "
+            "with what you can clearly see; an arm held out with nothing in the hand is not a weapon.")
 
 
 def _context_text(
@@ -492,9 +513,10 @@ def investigate(
     remembered = camera_memory.pick(memory or [], settings.memory_examples)
     photo_hash = hashlib.sha256(scanner_photo).hexdigest()[:16] if scanner_photo else ""
     floor = f"|{FLOOR_PROMPT_VERSION}" if camera.kind == "floor" else ""
+    threat_rules = _threat_rules(repo, camera)
     variant = f"{settings.investigator_model}@{fps}fps{floor}|" + json.dumps(
         [[i.description for i in confirmed], video_crop, camera_memory.version(remembered), photo_hash, tier1_screen,
-         tier1_measure.model_dump() if tier1_measure else None]
+         tier1_measure.model_dump() if tier1_measure else None, sorted(r.spec.summary for r in threat_rules)]
     )
     key = cache_key(clip, camera, transaction, variant, stills, zones)
 
@@ -525,6 +547,8 @@ def investigate(
         context = _context_text(camera, repo, tier1_events, zones, video_crop)
         if tier1_measure is not None:
             context += "\n\n" + measure_text(tier1_measure)
+        if threat_rules:
+            context += "\n\n" + threat_text(threat_rules)
         captions = close_up_text(tier1_measure)
         marked = _scanner_ref_parts(types, scanner_photo) + _still_parts(types, stills or [], captions=captions)
         marked_plain = [*_scanner_ref_parts(types, scanner_photo, plain=True),
@@ -632,6 +656,8 @@ def investigate(
         if video_crop:
             for item in verdict.seen_items:
                 item.box_2d = from_crop(item.box_2d, video_crop)
+            for threat in verdict.threats:
+                threat.box_2d = from_crop(threat.box_2d, video_crop)
 
         # ---- 5. Receipt-check safety rule: Gemini can clear an alert only when the receipt agrees ----
         receipt_note, overridden = None, False
@@ -644,10 +670,16 @@ def investigate(
         if tier1_note:
             receipt_note = f"{receipt_note} {tier1_note}" if receipt_note else tier1_note
             overridden = True
+        # Threat rule: a watched weapon Gemini can see is urgent; an aiming pose with no visible weapon needs a look.
+        verdict, threat_note, threat_changed, urgent = apply_threat_rule(verdict, threat_rules, tier1_events)
+        if threat_note:
+            receipt_note = f"{threat_note} {receipt_note}" if receipt_note else threat_note
+            overridden = overridden or threat_changed
 
         # ---- 6. Price, save, cache ----
         incident = _build_incident(verdict, camera, transaction, tool_results, tool_log, toolbox, model, started)
         incident.receipt_check = receipt_note
+        incident.urgent = urgent
         incident.overridden = overridden
         incident.video_crop = video_crop
         incident.zones_used = zones

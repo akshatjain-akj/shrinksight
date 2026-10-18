@@ -101,6 +101,24 @@ erDiagram
   a marked exit zone.
 - **Send log** on Live edge: trigger, verdict, reason, incident link and a download of exactly what Gemini received.
 
+## Built threat rules (possible weapon)
+
+- **Rule:** `THREAT` with `threat_of` firearm / knife / any_weapon, store-wide (no zone) or on one zone, severity HIGH.
+  "Alert if anyone points a gun" compiles to it (the rule-compile cache key is versioned, so rules refused under the
+  old prompt are recompiled).
+- **Tier 1** (`web/lib/tier1/threat.ts`): MediaPipe can't recognise a gun, but it can see the gesture: an arm held out
+  straight at shoulder height (elbow ≥ ~150°, wrist level with and away from the shoulder, scaled to body size), or
+  both hands together out in front, held 0.7 s. On Live edge the object detector also adds a knife or bat next to a
+  wrist. Either sends the clip at once (trigger `threat`), skipping hot frames and the usual cooldown, with its own
+  8 s cooldown per person. Monitor tiles use the light models, so there only the pose counts.
+- **Gemini:** active threat rules for the camera are added to the prompt; the verdict gains `threats`
+  (type, time, box, pointed at a person). A toy or replica is reported like a real one; staff decide.
+- **Fixed rule** (`apply_threat_rule`): a watched weapon Gemini can see → RULE_BREACH, `urgent`; an aiming pose with
+  no visible weapon and a BENIGN answer → INCONCLUSIVE (needs review), so a missed weapon never reads as all clear.
+- **UI:** pulsing "Possible threat" banner and a distinct three-beep alarm on the Monitor (urgent first in the list);
+  a red threat card and the weapon boxed on the incident's video. Wording everywhere: verify on camera; ShrinkSight
+  never contacts police automatically.
+
 ## Built demo mode
 
 - **Clips:** `gs://…/demo/checkout/` and `demo/floor/`, each with an optional `<clip>.json` (receipt, zones, expected).

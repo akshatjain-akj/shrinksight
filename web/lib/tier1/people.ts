@@ -35,6 +35,8 @@ export function posePeople(poses: Landmark[][], tMs: number): SeenPerson[] {
         rightHip,
         leftShoulder: visible(11),
         rightShoulder: visible(12),
+        leftElbow: visible(13),
+        rightElbow: visible(14),
         box,
       },
     }];

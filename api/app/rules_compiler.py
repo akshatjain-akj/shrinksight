@@ -19,9 +19,12 @@ Supported rule types:
   Set concealment_of when the manager names one hide: pocket, bag, shirt (under the shirt), or waistband.
   Leave concealment_of null to watch all four.
 - SCANNER_BYPASS: alert when items move around the scanner zone at a self-checkout.
+- THREAT: alert when someone holds or points a weapon. threat_of: firearm (gun, pistol, rifle), knife, or
+  any_weapon. zone_id may be null for every camera, or a zone if the manager names one. severity HIGH.
+  On the device an aiming pose (or a knife next to a hand) sends the clip; Gemini confirms the weapon.
 
 Rules:
-- zone_id MUST be one of the provided zone ids. Pick the zone the manager means.
+- zone_id MUST be one of the provided zone ids. Pick the zone the manager means. Only THREAT may leave it null.
 - Times are 24h HH:MM. "after 9pm" means active_from 21:00 and active_to 06:00. No time -> both null.
 - If the request is about a person's appearance, identity, age, gender or ethnicity, or anything outside the
   supported types, set supported=false and explain briefly in unsupported_reason.
@@ -37,9 +40,13 @@ class CompileResult:
     cached: bool
 
 
+# Part of the cache key: a prompt change (e.g. a new rule type) recompiles rules refused under the old prompt.
+COMPILER_VERSION = "2026-10-19.threat"
+
+
 def cache_key(text: str, zones: list[Zone], model: str) -> str:
     normalised = " ".join(text.lower().split())
-    payload = json.dumps([normalised, sorted(z.id for z in zones), model])
+    payload = json.dumps([normalised, sorted(z.id for z in zones), model, COMPILER_VERSION])
     return "rule:" + hashlib.sha256(payload.encode()).hexdigest()
 
 

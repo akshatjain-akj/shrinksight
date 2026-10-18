@@ -7,7 +7,7 @@ import LiveScan from "@/components/LiveScan";
 import { ErrorNotice, Skeletons } from "@/components/ui";
 import { aiModelLabel, VERDICT_LABEL } from "@/lib/format";
 import EdgeTuningBanner from "@/components/EdgeTuningBanner";
-import { armAlertSound, playAlertChime } from "@/lib/alertSound";
+import { armAlertSound, playAlertChime, playThreatAlarm } from "@/lib/alertSound";
 import { toTuning, useConfiguredModel, useEdgeConfig, useIncidents, useRules, useStore } from "@/lib/hooks";
 import { useClipUrl } from "@/lib/useClip";
 import {
@@ -167,12 +167,14 @@ export default function MonitorPage() {
   const visible = useMemo(() => {
     const byFilter = (incident: Incident) =>
       filter === "all" || (filter === "review" ? incident.status === "NEEDS_REVIEW" : incident.status === "REJECTED");
-    return (incidents ?? []).filter(
+    const shown = (incidents ?? []).filter(
       (incident) =>
         incident.verdict.verdict !== "BENIGN" &&
         byFilter(incident) &&
         (!cameraId || incident.camera_id === cameraId),
     );
+    // Possible threats first, whatever else is happening.
+    return [...shown].sort((a, b) => Number(Boolean(b.urgent)) - Number(Boolean(a.urgent)));
   }, [incidents, filter, cameraId]);
   const alertAt = listed?.seenAt ?? new Map<string, number>();
 
@@ -201,9 +203,14 @@ export default function MonitorPage() {
         !heard.current?.has(incident.id) &&
         (incident.status === "NEEDS_REVIEW" || incident.source === "demo"),
     );
+    const threat = incidents.some((incident) => incident.urgent && !heard.current?.has(incident.id));
     heard.current = new Set(incidents.map((incident) => incident.id));
-    if (fresh) playAlertChime();
+    if (threat) playThreatAlarm();
+    else if (fresh) playAlertChime();
   }, [incidents]);
+
+  // Possible threats waiting for a person: shown above everything until reviewed.
+  const threats = (incidents ?? []).filter((incident) => incident.urgent && incident.status === "NEEDS_REVIEW");
 
   const waiting = (incidents ?? []).filter(
     (incident) => incident.status === "NEEDS_REVIEW" && incident.verdict.verdict !== "BENIGN",
@@ -216,21 +223,39 @@ export default function MonitorPage() {
 
   return (
     <>
+      {threats.length > 0 && (
+        <div className="threat-banner" role="alert">
+          <strong>⚠ Possible threat</strong>
+          {threats.slice(0, 3).map((incident) => (
+            <Link key={incident.id} href={`/incident?id=${encodeURIComponent(incident.id)}`}>
+              {incident.camera_name} · {clock(incident.created_at)}
+            </Link>
+          ))}
+          <span>Verify on camera now. ShrinkSight never contacts police automatically.</span>
+        </div>
+      )}
       <div className="page-head">
         <div>
           <h1>{store?.name ?? "Store monitor"}</h1>
           <p>Live cameras on the floor. Gemini has already reviewed the alerts on the right.</p>
         </div>
         <div className="row">
-          <button
-            type="button"
-            className={`chip demo-toggle${demoOn ? " tone-accent" : ""}`}
-            aria-pressed={demoOn}
-            onClick={() => setDemoOn(!demoOn)}
-            title="Demo mode plays each camera's demo clip and its stored Gemini result. No Gemini calls."
-          >
-            Demo mode {demoOn ? "on" : "off"}
-          </button>
+          <span className="tip">
+            <button
+              type="button"
+              className={`chip demo-toggle${demoOn ? " tone-accent" : ""}`}
+              aria-pressed={demoOn}
+              aria-describedby="demo-tip"
+              onClick={() => setDemoOn(!demoOn)}
+            >
+              Demo mode {demoOn ? "on" : "off"}
+            </button>
+            <span role="tooltip" id="demo-tip" className="tip-text">
+              <strong>Demo mode</strong> shows the stored Gemini results of the demo clips the cameras are playing: when a
+              clip reaches its flagged moment, its alert appears here and in Playback, once per sign-in. No new Gemini
+              calls. Turn it off to see only real incidents.
+            </span>
+          </span>
           <span className={`chip ${live ? "tone-success" : ""}`}>{live ? "Live" : "Connecting"}</span>
           <Link href="/investigate" className="btn btn-primary">Investigate a clip</Link>
           <Link href="/settings?section=rules" className="btn">Store rules</Link>

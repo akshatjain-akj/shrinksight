@@ -14,6 +14,7 @@ const KIND_TEXT: Record<string, string> = {
   DWELL: "long stay in a zone",
   ZONE_ENTRY: "entered a zone",
   LANE_CLEAR: "left the lane",
+  THREAT: "possible aiming pose",
 };
 
 const SPOT_TEXT: Record<BodySpot, string> = {

@@ -324,7 +324,7 @@ export interface InvestigateMeta {
     score: number;
     detail: string;
     camera_id?: string;
-    trigger?: "hot_score" | "lane_leave";
+    trigger?: "hot_score" | "lane_leave" | "threat";
     confidence?: number;
     box?: [number, number, number, number];
   }[];

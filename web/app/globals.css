@@ -3498,3 +3498,81 @@ body:has(.login-screen) {
   .login-copy h2 { font-size: 1.35rem; }
   .login-copy p { font-size: 0.85rem; }
 }
+
+/* Possible threat (a store threat rule fired) */
+.threat-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  margin-bottom: 1rem;
+  padding: 0.8rem 1rem;
+  border: 2px solid #ef4444;
+  border-radius: 10px;
+  background: rgb(239 68 68 / 0.16);
+  color: #fecaca;
+  animation: threat-pulse 1.6s ease-in-out infinite;
+}
+.threat-banner strong {
+  color: #fff;
+  font-size: 1.05rem;
+}
+.threat-banner a {
+  color: #fff;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.threat-card {
+  border: 2px solid #ef4444;
+  background: rgb(239 68 68 / 0.1);
+}
+.threat-card h2 {
+  color: #f87171;
+}
+@keyframes threat-pulse {
+  50% {
+    box-shadow: 0 0 0 4px rgb(239 68 68 / 0.25);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .threat-banner {
+    animation: none;
+  }
+}
+
+/* Hover / keyboard-focus tooltip */
+.tip {
+  position: relative;
+  display: inline-flex;
+}
+.tip-text {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(20rem, 80vw);
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b1220;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+  pointer-events: none;
+}
+.tip:hover .tip-text,
+.tip:focus-within .tip-text {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tip-text {
+    transition: none;
+  }
+}

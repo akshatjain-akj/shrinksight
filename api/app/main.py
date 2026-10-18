@@ -1005,8 +1005,8 @@ class Tier1EventIn(BaseModel):
     @field_validator("trigger")
     @classmethod
     def known_trigger(cls, value: str | None) -> str | None:
-        if value is not None and value not in {"hot_score", "lane_leave"}:
-            raise ValueError("trigger must be hot_score or lane_leave")
+        if value is not None and value not in {"hot_score", "lane_leave", "threat"}:
+            raise ValueError("trigger must be hot_score, lane_leave or threat")
         return value
 
     @field_validator("box")

@@ -37,3 +37,15 @@ export function visibleMarks<T extends Markable>(
   const near = items.filter((item) => boxed(item) && Math.abs(markSeconds(item.t) - playhead) <= windowS);
   return [...near.filter((item) => item !== focus), ...near.filter((item) => item === focus)];
 }
+
+const THREAT_NAME: Record<string, string> = { firearm: "Firearm", knife: "Knife", other_weapon: "Weapon" };
+
+/** Weapons Gemini saw, as boxes for the same overlay (drawn first, so a threat is the flagged mark). */
+export function threatMarks(threats: { type: string; t: string; box_2d: number[]; pointed_at_person: boolean }[] | undefined) {
+  return (threats ?? []).map((threat) => ({
+    t: threat.t,
+    description: `${THREAT_NAME[threat.type] ?? "Weapon"}${threat.pointed_at_person ? " (pointed)" : ""}`,
+    scanned: false,
+    box_2d: threat.box_2d,
+  }));
+}
