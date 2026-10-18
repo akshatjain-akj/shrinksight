@@ -461,7 +461,7 @@ roles back); the API rewrites it the next time an instance starts (after a deplo
 results are kept unless you add `--demo` (the clips themselves stay in storage).
 
 ## Demo mode clips
-In demo mode (toggle on the Monitor; off until switched on) each camera loops a clip
+In demo mode (toggle on the Monitor; on by default for the demo login, off for everyone else) each camera loops a clip
 from the bucket's `demo/` folder and replays that clip's stored Gemini result. Live clips are still never stored.
 
 **Add clips, either way:**

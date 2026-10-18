@@ -17,8 +17,10 @@ export {
 
 /**
  * Demo mode: cameras on the Monitor loop their demo clips and demo-clip incidents are listed.
- * Off until this browser turns it on; the choice is remembered per account.
+ * On by default for the demo account (judges land on a live-looking wall), off for everyone else;
+ * the choice is remembered per account on this browser.
  */
+export const DEMO_EMAIL = "demo@shrinksight.app";
 const EVENT = "shrinksight-demo-mode";
 const key = (email: string) => `shrinksight.demoMode.${email}`;
 
@@ -26,7 +28,8 @@ export function demoModeOn(): boolean {
   if (typeof window === "undefined") return false;
   const session = readSession();
   if (!session) return false;
-  return localStorage.getItem(key(session.email)) === "on";
+  const saved = localStorage.getItem(key(session.email));
+  return saved ? saved === "on" : session.email === DEMO_EMAIL;
 }
 
 export function setDemoMode(on: boolean): void {
