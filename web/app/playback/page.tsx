@@ -102,7 +102,10 @@ export default function PlaybackPage() {
   const listed = useMemo(() => {
     if (!allIncidents) return null;
     if (!demoOn) return { items: forDemoMode(allIncidents, false), seenAt: new Map<string, number>() };
-    const everything = withDemoIncidents(allIncidents, demoIncidents);
+    const everything = withDemoIncidents(
+      allIncidents.filter((incident) => incident.source !== "seed"),
+      demoIncidents,
+    );
     if (showAllDemo) return { items: everything, seenAt: new Map<string, number>() };
     return withSightings(everything, sightings);
   }, [allIncidents, demoOn, showAllDemo, sightings, demoIncidents]);

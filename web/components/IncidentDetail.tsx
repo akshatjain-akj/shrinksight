@@ -3,11 +3,15 @@
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { clipSeconds, dateTime, inr } from "@/lib/format";
+import { aiModelLabel, clipSeconds, dateTime, inr } from "@/lib/format";
+import { useConfiguredModel, useRules, useStore } from "@/lib/hooks";
 import { flaggedItem } from "@/lib/marks";
 import { fitPlayer } from "@/lib/player";
 import GeminiMarks from "./GeminiMarks";
-import type { ConfirmReason, DismissReason, Incident, SeenItem, TokenUsage } from "@/lib/types";
+import LiveScan from "./LiveScan";
+import { polygonsForCamera } from "@/lib/cameraConfig";
+import { ZONE_COLOURS, ZONE_LABELS, zonesForReplay } from "@/lib/tier1/zones";
+import type { Camera, ConfirmReason, DismissReason, Incident, Rule, SeenItem, TokenUsage, Zone } from "@/lib/types";
 import AskPanel from "./AskPanel";
 import { ErrorNotice, StatusPill, VerdictBadge } from "./ui";
 
@@ -106,17 +110,24 @@ function AgentSteps({ incident }: { incident: Incident }) {
   );
 }
 
-function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
+function Evidence({ incident, videoUrl, videoNote, focus, videoRef, camera, zones, rules }: {
   incident: Incident;
   videoUrl?: string;
   videoNote?: string;
   focus: SeenItem | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  camera: Camera | null;
+  zones: Zone[];
+  rules: Rule[];
 }) {
   const [aspect, setAspect] = useState<number | null>(null);
   // Where the video is (seconds); boxes are drawn only around their item's moment. Null without a video.
   const [playhead, setPlayhead] = useState<number | null>(videoUrl ? 0 : null);
   const hasBoxes = incident.verdict.seen_items.some((item) => item.box_2d?.length === 4);
+  const zoneShapes = zonesForReplay(
+    incident.zones_used,
+    camera ? polygonsForCamera(camera.id, zones.filter((zone) => camera.zone_ids.includes(zone.id))) : [],
+  );
   const note = videoUrl
     ? null
     : incident.source === "seed"
@@ -126,7 +137,30 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
   return (
     <div>
       <div className={`evidence${videoUrl ? "" : " evidence-placeholder"}`} style={videoUrl ? fitPlayer(aspect) : undefined}>
-        {videoUrl && (
+        {videoUrl && camera && (
+          <LiveScan
+            src={videoUrl}
+            camera={camera}
+            zones={zones}
+            rules={rules}
+            controls
+            scoreOnly
+            drawZones={false}
+            savedZones={incident.zones_used}
+            onTime={setPlayhead}
+            onVideo={(video) => {
+              videoRef.current = video;
+            }}
+            onAspect={(ratio) => {
+              setAspect(ratio);
+              const video = videoRef.current;
+              if (video && focus?.box_2d?.length === 4) {
+                video.currentTime = Math.min(clipSeconds(focus.t), video.duration || Infinity);
+              }
+            }}
+          />
+        )}
+        {videoUrl && !camera && (
           <video
             ref={videoRef}
             src={videoUrl}
@@ -136,12 +170,41 @@ function Evidence({ incident, videoUrl, videoNote, focus, videoRef }: {
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               if (v.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight);
-              // Open paused on the flagged item's moment, where its box belongs.
               if (focus?.box_2d?.length === 4) v.currentTime = Math.min(clipSeconds(focus.t), v.duration || Infinity);
             }}
             onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)}
             onSeeked={(e) => setPlayhead(e.currentTarget.currentTime)}
           />
+        )}
+        {videoUrl && zoneShapes.length > 0 && (
+          <>
+            <svg className="zone-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+              {zoneShapes.map((shape) => (
+                <polygon
+                  key={shape.id}
+                  points={shape.polygon.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+                  fill="none"
+                  stroke={ZONE_COLOURS[shape.kind] ?? "#e6ebf5"}
+                  strokeWidth={8}
+                  strokeDasharray="14 8"
+                />
+              ))}
+            </svg>
+            {zoneShapes.map((shape) => {
+              const top = shape.polygon.reduce((best, point) =>
+                point.y < best.y || (point.y === best.y && point.x < best.x) ? point : best,
+              );
+              return (
+                <span
+                  key={`${shape.id}-label`}
+                  className="zone-tag"
+                  style={{ left: `${top.x * 100}%`, top: `${top.y * 100}%`, background: ZONE_COLOURS[shape.kind] ?? "#e6ebf5" }}
+                >
+                  {ZONE_LABELS[shape.kind] ?? shape.kind}
+                </span>
+              );
+            })}
+          </>
         )}
         <GeminiMarks items={incident.verdict.seen_items} focus={focus} playhead={videoUrl ? playhead : null} />
         {note && <p className="evidence-note">{note}</p>}
@@ -163,6 +226,7 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
   videoNote?: string;
 }) {
   const { verdict } = incident;
+  const configured = useConfiguredModel();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [focus, setFocus] = useState<SeenItem | null>(
     () => flaggedItem(verdict.seen_items),
@@ -212,6 +276,9 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
     }
   };
 
+  const { store } = useStore();
+  const { data: rules } = useRules();
+  const camera = store?.cameras.find((item) => item.id === incident.camera_id) ?? null;
   const isCheckout = incident.camera_kind === "checkout";
   const receiptTotal = incident.receipt.reduce((sum, line) => sum + line.price_inr, 0);
 
@@ -283,54 +350,65 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
         <AgentSteps incident={incident} />
       </div>
 
-      <div className="grid-main">
-        <div className="card stack">
+      <div className="incident-layout">
+        <div className="card stack incident-video">
           <h2>Evidence</h2>
-          <Evidence incident={incident} videoUrl={videoUrl} videoNote={videoNote} focus={focus} videoRef={videoRef} />
-          <blockquote className="reason">{verdict.reason}</blockquote>
-          {verdict.similar_past_case && (
-            <p className="memory-note small" style={{ margin: 0 }}>
-              <strong>Like a past decision on this camera:</strong> {verdict.similar_past_case}
-            </p>
-          )}
-          {incident.memory_used && incident.memory_used.length > 0 && (
-            <details className="small">
-              <summary>
-                Gemini used {incident.memory_used.length} past decision{incident.memory_used.length === 1 ? "" : "s"} from
-                this camera
-              </summary>
-              <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem" }}>
-                {incident.memory_used.map((m) => (
-                  <li key={m.incident_id}>
-                    {dateTime(m.reviewed_at)} · {m.decision === "dismiss" ? "Dismissed" : "Confirmed"}
-                    {m.reason ? ` (${REASON_LABEL[m.reason] ?? m.reason})` : ""} ·{" "}
-                    <Link href={`/incident?id=${encodeURIComponent(m.incident_id)}`}>open</Link>
-                  </li>
-                ))}
-              </ul>
-              <p className="muted" style={{ margin: "0.3rem 0 0" }}>
-                Past decisions are context only. The till receipt check always has the final say on what was paid.
-              </p>
-            </details>
-          )}
-          {verdict.timeline.length > 0 && (
-            <section>
-              <h3>What happened</h3>
-              <ol className="timeline">
-                {verdict.timeline.map((ev, i) => (
-                  <li key={i}>
-                    <button type="button" className="linkish time" onClick={() => seek(ev.t)}>
-                      {ev.t}
-                    </button>
-                    <span>{ev.event}</span>
-                  </li>
-                ))}
-              </ol>
-            </section>
-          )}
+          <Evidence
+            incident={incident}
+            videoUrl={videoUrl}
+            videoNote={videoNote}
+            focus={focus}
+            videoRef={videoRef}
+            camera={camera}
+            zones={store?.zones ?? []}
+            rules={rules ?? []}
+          />
         </div>
 
-        <div className="stack">
+        <div className="stack incident-rest">
+          <div className="card stack">
+          <blockquote className="reason">{verdict.reason}</blockquote>
+            {verdict.similar_past_case && (
+              <p className="memory-note small" style={{ margin: 0 }}>
+                <strong>Like a past decision on this camera:</strong> {verdict.similar_past_case}
+              </p>
+            )}
+            {incident.memory_used && incident.memory_used.length > 0 && (
+              <details className="small">
+                <summary>
+                  Gemini used {incident.memory_used.length} past decision{incident.memory_used.length === 1 ? "" : "s"} from
+                  this camera
+                </summary>
+                <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem" }}>
+                  {incident.memory_used.map((m) => (
+                    <li key={m.incident_id}>
+                      {dateTime(m.reviewed_at)} · {m.decision === "dismiss" ? "Dismissed" : "Confirmed"}
+                      {m.reason ? ` (${REASON_LABEL[m.reason] ?? m.reason})` : ""} ·{" "}
+                      <Link href={`/incident?id=${encodeURIComponent(m.incident_id)}`}>open</Link>
+                    </li>
+                  ))}
+                </ul>
+                <p className="muted" style={{ margin: "0.3rem 0 0" }}>
+                  Past decisions are context only. The till receipt check always has the final say on what was paid.
+                </p>
+              </details>
+            )}
+            {verdict.timeline.length > 0 && (
+              <div>
+                <h3>What happened</h3>
+                <ol className="timeline">
+                  {verdict.timeline.map((ev, i) => (
+                    <li key={i}>
+                      <button type="button" className="linkish time" onClick={() => seek(ev.t)}>
+                        {ev.t}
+                      </button>
+                      <span>{ev.event}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
           {isCheckout && (
             <section className="card" aria-labelledby="compare-title">
               <h2 id="compare-title">Seen on camera vs. till receipt</h2>
@@ -474,7 +552,9 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
               </ul>
             </section>
           )}
+        </div>
 
+        <div className="stack incident-side">
           <section className="card stack" aria-labelledby="review-title">
             <h2 id="review-title">Human review</h2>
             {pending ? (
@@ -573,7 +653,7 @@ export default function IncidentDetail({ incident, videoUrl, videoNote }: {
               </div>
             )}
             <p className="muted small" style={{ margin: 0 }}>
-              Model: {incident.model}
+              Model: {aiModelLabel(incident.model, configured)}
               {incident.timings
                 ? ` · ${timingText(incident.timings)}`
                 : incident.latency_ms

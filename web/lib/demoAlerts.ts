@@ -45,6 +45,16 @@ export function withSightings<T extends { id: string; source: string }>(
   return { items, seenAt };
 }
 
+/**
+ * A demo clip is replayed for every viewer. An earlier confirm or dismiss must not stick, or the desk
+ * opens on "Confirmed by staff" from a past date instead of asking again.
+ */
+export function openForReview<T extends { source: string; status: string }>(incident: T): T {
+  if (incident.source !== "demo") return incident;
+  if (incident.status !== "RESOLVED_CONFIRMED" && incident.status !== "RESOLVED_DISMISSED") return incident;
+  return { ...incident, status: "NEEDS_REVIEW", reviewed_at: null, review_reason: null, review_note: null };
+}
+
 /** The newest-incidents list plus the demo clips' results (often older than that window), each incident once. */
 export function withDemoIncidents<T extends { id: string }>(live: T[], demo: T[]): T[] {
   const ids = new Set(live.map((incident) => incident.id));

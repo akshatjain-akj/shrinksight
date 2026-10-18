@@ -43,7 +43,7 @@ export default function AskPanel({ incident }: { incident: Incident }) {
         A Gemini agent looks things up in the store data (incidents, receipts, zones, prices) to answer.
       </p>
       <form
-        className="row"
+        className="ask-form"
         onSubmit={(e) => {
           e.preventDefault();
           void submit(question);
@@ -59,13 +59,12 @@ export default function AskPanel({ incident }: { incident: Incident }) {
           placeholder="e.g. Has this lane had other missed scans today?"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          style={{ flex: 1, minWidth: 200 }}
         />
         <button type="submit" className="btn btn-primary" disabled={asking || question.trim().length < 3}>
           {asking ? "Asking…" : "Ask"}
         </button>
       </form>
-      <div className="row" aria-label="Example questions">
+      <div className="ask-suggestions" aria-label="Example questions">
         {suggestions(incident).map((s) => (
           <button key={s} type="button" className="chip" disabled={asking} onClick={() => void submit(s)}>
             {s}

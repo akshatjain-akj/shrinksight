@@ -6,6 +6,7 @@ Seeded documents use fixed ids, so re-seeding never duplicates and never touches
 
 from typing import Literal
 
+from .config import DEFAULT_GEMINI_MODEL
 from .models import (
     Camera,
     Feedback,
@@ -30,7 +31,7 @@ SEED_VERSION = "2026-10-08.demo-login"
 SEED_PASSWORD = "ShrinkSight26"
 # The account "Enter the demo store" signs in as (a manager). Judges never see or type its password.
 DEMO_EMAIL = "demo@shrinksight.app"
-STORE_NAME = "Demo Mart (synthetic)"
+STORE_NAME = "City Basket"
 
 CAMERAS = [
     Camera(id="cam-sco-1", name="Self-checkout · Lane 1", kind="checkout", lane_id="L1",
@@ -108,7 +109,7 @@ INCIDENTS = [
     Incident(
         id="inc-seed-001", created_at="2026-10-03T09:00:02Z", camera_id="cam-sco-2",
         camera_name="Self-checkout · Lane 2", camera_kind="checkout", status="NEEDS_REVIEW",
-        transaction_id="TXN-L2-2041", receipt=TRANSACTIONS[0].lines, model="seed", source="seed",
+        transaction_id="TXN-L2-2041", receipt=TRANSACTIONS[0].lines, model=DEFAULT_GEMINI_MODEL, source="seed",
         latency_ms=5400, est_loss_inr=1850,
         unscanned_items=[UnscannedItem(t="00:06.4", description="green glass wine bottle",
                                        price_inr=1850, matched_sku="SKU-0005")],
@@ -133,7 +134,7 @@ INCIDENTS = [
     ),
     Incident(
         id="inc-seed-002", created_at="2026-10-03T08:12:40Z", camera_id="cam-aisle-4",
-        camera_name="Aisle 4 · Spirits", camera_kind="floor", status="NEEDS_REVIEW", model="seed",
+        camera_name="Aisle 4 · Spirits", camera_kind="floor", status="NEEDS_REVIEW", model=DEFAULT_GEMINI_MODEL,
         source="seed", latency_ms=4700, est_loss_inr=2400,
         unscanned_items=[UnscannedItem(t="00:03.4", description="whisky bottle", price_inr=2400,
                                        matched_sku="SKU-0006")],
@@ -153,7 +154,7 @@ INCIDENTS = [
     ),
     Incident(
         id="inc-seed-003", created_at="2026-10-03T07:55:18Z", camera_id="cam-aisle-2",
-        camera_name="Aisle 2 · Snacks", camera_kind="floor", status="REJECTED", model="seed",
+        camera_name="Aisle 2 · Snacks", camera_kind="floor", status="REJECTED", model=DEFAULT_GEMINI_MODEL,
         source="seed", latency_ms=3900,
         tool_calls=[ToolCallLog(name="get_zone_policy", args={"zone_id": "z-snacks"})],
         verdict=VerdictOut(
@@ -166,7 +167,7 @@ INCIDENTS = [
     Incident(
         id="inc-seed-004", created_at="2026-10-03T07:41:05Z", camera_id="cam-sco-1",
         camera_name="Self-checkout · Lane 1", camera_kind="checkout", status="REJECTED",
-        transaction_id="TXN-L1-1001", receipt=TRANSACTIONS[1].lines, model="seed", source="seed",
+        transaction_id="TXN-L1-1001", receipt=TRANSACTIONS[1].lines, model=DEFAULT_GEMINI_MODEL, source="seed",
         latency_ms=5100,
         tool_calls=[ToolCallLog(name="get_pos_transaction", args={"lane_id": "L1"})],
         verdict=VerdictOut(
@@ -185,7 +186,7 @@ INCIDENTS = [
         id="inc-seed-005", created_at="2026-10-03T06:16:20Z", camera_id="cam-sco-1",
         camera_name="Self-checkout · Lane 1", camera_kind="checkout", status="RESOLVED_CONFIRMED",
         reviewed_at="2026-10-03T06:30:00Z", transaction_id="TXN-L1-1002", receipt=TRANSACTIONS[2].lines,
-        model="seed", source="seed", latency_ms=6200, est_loss_inr=650,
+        model=DEFAULT_GEMINI_MODEL, source="seed", latency_ms=6200, est_loss_inr=650,
         unscanned_items=[UnscannedItem(t="00:05.2", description="small blister pack under cereal box",
                                        price_inr=650, matched_sku="SKU-0024")],
         tool_calls=[ToolCallLog(name="get_pos_transaction", args={"lane_id": "L1"}),
@@ -207,7 +208,7 @@ INCIDENTS = [
         id="inc-seed-006", created_at="2026-10-02T17:02:41Z", camera_id="cam-sco-1",
         camera_name="Self-checkout · Lane 1", camera_kind="checkout", status="RESOLVED_DISMISSED",
         reviewed_at="2026-10-02T17:15:00Z", transaction_id="TXN-L1-1003", receipt=TRANSACTIONS[3].lines,
-        model="seed", source="seed", latency_ms=5800, est_loss_inr=0,
+        model=DEFAULT_GEMINI_MODEL, source="seed", latency_ms=5800, est_loss_inr=0,
         unscanned_items=[UnscannedItem(t="00:08.3", description="black phone")],
         tool_calls=[ToolCallLog(name="get_pos_transaction", args={"lane_id": "L1"})],
         verdict=VerdictOut(

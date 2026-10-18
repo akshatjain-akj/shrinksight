@@ -8,8 +8,45 @@ import type { FaceDetector, ObjectDetector, PoseLandmarker } from "@mediapipe/ta
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
 const POSE = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
+const POSE_LITE = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 const FACE = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
 const OBJECTS = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite";
+
+export interface PrivacyModels {
+  pose: PoseLandmarker;
+  face: FaceDetector;
+  close: () => void;
+}
+
+/** Face + a light pose model, one still at a time. Used to blur every camera tile that is not running the full scan. */
+export async function loadPrivacy(): Promise<PrivacyModels> {
+  const vision = await import("@mediapipe/tasks-vision");
+  const fileset = await vision.FilesetResolver.forVisionTasks(WASM);
+  const pose = await withDelegate((delegate) =>
+    vision.PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: POSE_LITE, delegate },
+      runningMode: "IMAGE",
+      numPoses: 3,
+      minPoseDetectionConfidence: 0.5,
+      minPosePresenceConfidence: 0.5,
+    }),
+  );
+  const face = await withDelegate((delegate) =>
+    vision.FaceDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: FACE, delegate },
+      runningMode: "IMAGE",
+      minDetectionConfidence: 0.5,
+    }),
+  );
+  return {
+    pose,
+    face,
+    close: () => {
+      pose.close();
+      face.close();
+    },
+  };
+}
 
 export interface VisionModels {
   pose: PoseLandmarker;
@@ -42,6 +79,33 @@ export async function loadPose(): Promise<PoseLandmarker> {
   return withDelegate((delegate) =>
     vision.PoseLandmarker.createFromOptions(fileset, { baseOptions: { modelAssetPath: POSE, delegate }, ...POSE_OPTIONS }),
   );
+}
+
+/** Pose and face in video mode, for one camera. Each tile needs its own copy; one shared model mixes the streams. */
+export async function loadScan(): Promise<PrivacyModels> {
+  const vision = await import("@mediapipe/tasks-vision");
+  const fileset = await vision.FilesetResolver.forVisionTasks(WASM);
+  const pose = await withDelegate((delegate) =>
+    vision.PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: POSE, delegate },
+      ...POSE_OPTIONS,
+    }),
+  );
+  const face = await withDelegate((delegate) =>
+    vision.FaceDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: FACE, delegate },
+      runningMode: "VIDEO",
+      minDetectionConfidence: 0.5,
+    }),
+  );
+  return {
+    pose,
+    face,
+    close: () => {
+      pose.close();
+      face.close();
+    },
+  };
 }
 
 export async function loadVision(): Promise<VisionModels> {

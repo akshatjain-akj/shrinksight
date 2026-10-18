@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addSighting, forDemoMode, shouldAlert, withDemoIncidents, withSightings, type DemoSighting } from "./demoAlerts.ts";
+import { addSighting, forDemoMode, openForReview, shouldAlert, withDemoIncidents, withSightings, type DemoSighting } from "./demoAlerts.ts";
+
+test("a confirmed demo clip opens as needs review; the model result stays", () => {
+  const saved = {
+    id: "inc-demo",
+    source: "demo",
+    status: "RESOLVED_CONFIRMED",
+    reviewed_at: "2026-10-09T13:51:00Z",
+    review_reason: "concealed",
+    review_note: "bag",
+    model: "gemini-3.5-flash-lite",
+  };
+  const opened = openForReview(saved);
+  assert.equal(opened.status, "NEEDS_REVIEW");
+  assert.equal(opened.reviewed_at, null);
+  assert.equal(opened.review_reason, null);
+  assert.equal(opened.model, "gemini-3.5-flash-lite");
+  assert.equal(openForReview({ ...saved, source: "seed" }).status, "RESOLVED_CONFIRMED");
+  assert.equal(openForReview({ ...saved, status: "NEEDS_REVIEW" }).status, "NEEDS_REVIEW");
+});
 
 test("demo-clip incidents are hidden unless demo mode is on", () => {
   const items = [{ id: "a", source: "live" }, { id: "b", source: "demo" }, { id: "c", source: "seed" }];

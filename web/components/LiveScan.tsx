@@ -7,7 +7,7 @@ import { DEFAULT_TUNING, Tier1Engine, type EdgeTuning } from "@/lib/tier1/engine
 import { PersonTracker } from "@/lib/tier1/tracks";
 import { privacyBoxes } from "@/lib/tier1/privacy";
 import { PoseSmoother } from "@/lib/tier1/oneEuro";
-import { loadVision, type VisionModels } from "@/lib/tier1/vision";
+import { loadScan, type PrivacyModels } from "@/lib/tier1/vision";
 import { zonesForReplay } from "@/lib/tier1/zones";
 import type { Camera, Rule, Zone, ZoneHint } from "@/lib/types";
 
@@ -37,25 +37,9 @@ function pixelateFace(ctx: CanvasRenderingContext2D, scratch: CanvasRenderingCon
   ctx.restore();
 }
 
-let modelsPromise: Promise<VisionModels> | null = null;
-// Models are shared by every tile; MediaPipe needs strictly increasing timestamps per model.
+// Each tile owns its models. A shared video-mode model would mix the four streams.
 let lastStamp = 0;
 const nextStamp = () => (lastStamp = Math.max(performance.now(), lastStamp + 1));
-let modelUsers = 0;
-
-function acquireModels(): Promise<VisionModels> {
-  modelUsers += 1;
-  modelsPromise ??= loadVision();
-  return modelsPromise;
-}
-
-function releaseModels() {
-  modelUsers = Math.max(0, modelUsers - 1);
-  if (modelUsers > 0 || !modelsPromise) return;
-  const closing = modelsPromise;
-  modelsPromise = null;
-  closing.then((models) => models.close()).catch(() => undefined);
-}
 
 function posePeople(poses: Landmark[][], tMs: number) {
   const people = poses.flatMap((pose) => {
@@ -122,6 +106,7 @@ export default function LiveScan({
   onVideo,
   savedZones,
   scoreOnly = false,
+  drawZones = true,
   tuning = DEFAULT_TUNING,
 }: {
   src: string;
@@ -145,6 +130,8 @@ export default function LiveScan({
    * page shows the stored Gemini result.
    */
   scoreOnly?: boolean;
+  /** False when the parent draws the zone outlines itself, so they stay visible while the clip is paused. */
+  drawZones?: boolean;
   /** The camera's auto-tuned gate (live from Firestore). */
   tuning?: EdgeTuning;
 }) {
@@ -157,6 +144,8 @@ export default function LiveScan({
   const zonesRef = useRef(zones);
   const savedZonesRef = useRef(savedZones);
   savedZonesRef.current = savedZones;
+  const drawZonesRef = useRef(drawZones);
+  drawZonesRef.current = drawZones;
   const scoreOnlyRef = useRef(scoreOnly);
   scoreOnlyRef.current = scoreOnly;
   const zonesKey = JSON.stringify(savedZones ?? []);
@@ -193,7 +182,7 @@ export default function LiveScan({
     const tracker = new PersonTracker(() => new Tier1Engine(active.kind, shapes, rulesRef.current));
     tracker.setTuning(tuningRef.current);
     trackerRef.current = tracker;
-    let models: VisionModels | null = null;
+    let models: PrivacyModels | null = null;
     let alive = true;
     let raf = 0;
     let frame = 0;
@@ -211,7 +200,8 @@ export default function LiveScan({
     });
     if (canvas.parentElement) observer.observe(canvas.parentElement);
     const PROCESS_EVERY_MS = 66; // ~15 scans per second is plenty for tracking and keeps the page smooth
-    acquireModels()
+    const loading = loadScan();
+    loading
       .then((loaded) => {
         if (!alive) return;
         models = loaded;
@@ -273,7 +263,7 @@ export default function LiveScan({
       // Faces from the face detector plus heads from the pose model (works at CCTV distance).
       for (const box of privacyBoxes(faces, rawPoses, width, height)) pixelateFace(ctx, scratch, video, box);
       ctx.lineWidth = Math.max(2, width / 320);
-      for (const zone of shapes) {
+      for (const zone of drawZonesRef.current ? shapes : []) {
         ctx.strokeStyle = zone.kind === "scanner" ? "#fbbf24" : zone.kind === "bagging" ? "#38bdf8" : "#34d399";
         ctx.beginPath();
         zone.polygon.forEach((point, index) => {
@@ -327,7 +317,7 @@ export default function LiveScan({
       alive = false;
       observer.disconnect();
       cancelAnimationFrame(raf);
-      releaseModels();
+      loading.then((loaded) => loaded.close()).catch(() => undefined);
     };
     // zonesKey: a different saved layout restarts the scan with it
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -112,6 +112,19 @@ export async function openDemoSession(): Promise<Session> {
   return res.json() as Promise<Session>;
 }
 
+/** Investigator model from the cheap health probe. Null when the API is down. */
+export async function configuredModel(): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/healthz`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { investigator_model?: string };
+    const name = body.investigator_model?.trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether the one-click demo login is switched on (from the cheap health probe). */
 export async function demoLoginOn(): Promise<boolean> {
   try {

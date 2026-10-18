@@ -16,8 +16,9 @@ export {
 } from "./demoAlerts";
 
 /**
- * Demo mode: cameras on the Monitor loop their demo clips and demo-clip incidents are listed. On by default for the
- * demo account, off for everyone else; the choice is remembered per account on this browser.
+ * Demo mode: cameras on the Monitor loop their demo clips and demo-clip incidents are listed.
+ * On by default for the demo account (judges land on a live-looking wall), off for everyone else;
+ * the choice is remembered per account on this browser.
  */
 export const DEMO_EMAIL = "demo@shrinksight.app";
 const EVENT = "shrinksight-demo-mode";
@@ -121,6 +122,17 @@ function seenKey(): string | null {
   const session = readSession();
   if (!session) return null;
   return `${SEEN_PREFIX}${session.email}.${session.exp ?? session.token.slice(-12)}`;
+}
+
+/** Drops the wall's "already flagged" list so a clip can alert again when it next reaches its moment. */
+export function clearSightings(): void {
+  if (typeof window === "undefined") return;
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(SEEN_PREFIX)) localStorage.removeItem(key);
+  }
+  seenRaw = undefined;
+  seenSnapshot = NONE;
+  window.dispatchEvent(new Event(SEEN_EVENT));
 }
 
 export function readSightings(): DemoSighting[] {

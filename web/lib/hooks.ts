@@ -2,7 +2,7 @@
 
 import { collection, doc, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, configuredModel } from "./api";
 import { syncLayoutsFromServer } from "./cameraConfig";
 import { db, ensureAuth } from "./firebase";
 import { DEFAULT_TUNING, type EdgeTuning } from "./tier1/engine";
@@ -126,4 +126,19 @@ export function useEdgeConfig(cameraId: string | null | undefined) {
     };
   }, [cameraId]);
   return { config, setConfig, tuning: toTuning(config) };
+}
+
+/** Gemini model this deployment investigates with. Falls back to "Gemini" if health is unreachable. */
+export function useConfiguredModel(): string {
+  const [model, setModel] = useState("Gemini");
+  useEffect(() => {
+    let cancelled = false;
+    configuredModel().then((name) => {
+      if (!cancelled && name) setModel(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return model;
 }

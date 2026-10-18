@@ -34,17 +34,18 @@ const SPRINKLE_COLORS = ["#f6c445", "#3dcf8e", "#ff8f6b", "#7d5cff", "#ffd36a", 
 type Sprinkle = { id: string; x: number; y: number; w: number; h: number; rot: number; color: string; round: boolean };
 
 function sprinklesFor(slide: number): Sprinkle[] {
-  const count = 8;
-  return Array.from({ length: count }, (_, i) => {
-    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.7;
-    const dist = 24 + Math.random() * 20;
-    const x = Math.min(92, Math.max(6, 50 + Math.cos(angle) * dist));
-    const y = Math.min(88, Math.max(8, 46 + Math.sin(angle) * dist * 0.7));
-    const tall = Math.random() > 0.5;
+  const ring: [number, number][] = [
+    [14, 32], [82, 30], [8, 44], [90, 46],
+    [22, 38], [74, 36], [18, 52], [78, 50],
+  ];
+  return ring.map(([x, y], i) => {
+    const jx = ((i * 5 + slide * 3) % 7) - 3;
+    const jy = ((i * 4 + slide * 2) % 5) - 2;
+    const tall = (i + slide) % 2 === 0;
     return {
-      id: `${slide}-${i}-${angle.toFixed(2)}`,
-      x: Math.round(x),
-      y: Math.round(y),
+      id: `${slide}-${i}`,
+      x: Math.min(94, Math.max(4, x + jx)),
+      y: Math.min(54, Math.max(26, y + jy)),
       w: Math.round(tall ? 10 + Math.random() * 6 : 12 + Math.random() * 8),
       h: Math.round(tall ? 16 + Math.random() * 10 : 11 + Math.random() * 6),
       rot: Math.round(Math.random() * 80 - 40),
@@ -143,13 +144,13 @@ export default function LoginPage() {
     }
   }
 
-  const title = mode === "signup" ? "Create account" : mode === "recover" ? "Reset password" : "Hello Again!";
+  const title = mode === "signup" ? "Create account" : mode === "recover" ? "Reset password" : "See what the till missed";
   const lede =
     mode === "signup"
-      ? "Open a store desk for the synthetic Demo Mart."
+      ? "Store accounts are issued by a manager."
       : mode === "recover"
         ? "We will show a reset note on this page. No email leaves the browser."
-        : "Sign in to the loss-prevention desk. Demo Mart uses synthetic data only.";
+        : "Loss-prevention desk for one grocery store.";
 
   return (
     <div className="login-screen">
@@ -219,7 +220,7 @@ export default function LoginPage() {
             </div>
 
             <div className="login-slide" aria-hidden={slide !== 1}>
-              <div className="login-stage login-stage-drag">
+              <div className="login-stage login-stage-drag login-stage-alerts">
                 <article className="login-card login-card-main login-card-plain">
                   <p className="login-kicker">THIS SHIFT</p>
                   <h2>1 review of 6 alerts</h2>
@@ -254,7 +255,7 @@ export default function LoginPage() {
             </div>
 
             <div className="login-slide" aria-hidden={slide !== 2}>
-              <div className="login-stage login-stage-drag">
+              <div className="login-stage login-stage-drag login-stage-till">
                 <article className="login-card login-card-main login-card-plain">
                   <p className="login-kicker">TILL CHECK</p>
                   <h2>Bottle never hit the receipt</h2>
@@ -325,8 +326,8 @@ export default function LoginPage() {
 
         {mode === "login" && (
           <div className="login-demo">
-            <strong>Judging or just looking?</strong>
-            <span>Open the synthetic Demo Mart as its manager. No account or password needed.</span>
+            <strong>Open the demo</strong>
+            <span>Enter as the store manager. No account or password.</span>
             <DemoEnter className="login-submit" />
           </div>
         )}

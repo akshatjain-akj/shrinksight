@@ -27,6 +27,13 @@ export function clipSeconds(t: string): number {
   return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
+/** Example alerts store `"seed"` as a marker. That is not a model id. */
+export function aiModelLabel(model: string | null | undefined, fallback = "Gemini"): string {
+  const name = (model ?? "").trim();
+  if (!name || name === "seed") return fallback;
+  return name;
+}
+
 export const VERDICT_LABEL: Record<VerdictKind, string> = {
   SCAN_AVOIDANCE: "Scan avoidance",
   CONCEALMENT: "Concealment",
